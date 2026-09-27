@@ -4,7 +4,6 @@
 
 ![LimitBar preview](assets/preview.png)
 
-_Preview assembled from the current UI; quota values and reset times shown are illustrative snapshot data._
 
 ## Что изменилось в 0.5
 
