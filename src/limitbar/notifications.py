@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from statistics import median
 
 from limitbar.config import Settings
 from limitbar.models import Health, LimitWindow, UsageSnapshot
@@ -21,6 +22,7 @@ class NotificationEngine:
         self.settings = settings
         self._sent: set[str] = set()
         self._previous: dict[tuple[str, str], tuple[float, datetime, datetime | None]] = {}
+        self._history: dict[tuple[str, str], list[tuple[datetime, float]]] = {}
         self._failures: dict[str, int] = {}
 
     def evaluate(self, snapshot: UsageSnapshot, now: datetime | None = None) -> list[Notice]:
@@ -83,7 +85,8 @@ class NotificationEngine:
                         )
                     )
 
-        previous = self._previous.get((snapshot.provider_id, window.id))
+        key = (snapshot.provider_id, window.id)
+        previous = self._previous.get(key)
         if previous:
             old_used, old_time, old_reset = previous
             if self.settings.notify_reset_complete and old_used - window.used_percent >= 20 and window.used_percent <= 10:
@@ -94,10 +97,9 @@ class NotificationEngine:
                         f"complete:{snapshot.provider_id}:{window.id}:{snapshot.fetched_at.isoformat(timespec='minutes')}",
                     )
                 )
-            elapsed_seconds = (snapshot.fetched_at.astimezone(timezone.utc) - old_time).total_seconds()
-            consumed = window.used_percent - old_used
-            if self.settings.notify_fast_usage and reset and elapsed_seconds >= 120 and consumed >= 2:
-                burn_per_hour = consumed * 3600 / elapsed_seconds
+            samples = self._history.get(key, []) + [(snapshot.fetched_at.astimezone(timezone.utc), window.used_percent)]
+            burn_per_hour = _robust_burn_rate(samples)
+            if self.settings.notify_fast_usage and reset and burn_per_hour is not None:
                 projected_hours = remaining / burn_per_hour if burn_per_hour > 0 else 999
                 reset_hours = max(0.0, (reset - now).total_seconds() / 3600)
                 if projected_hours < 6 and projected_hours + 0.5 < reset_hours:
@@ -120,6 +122,27 @@ class NotificationEngine:
                     snapshot.fetched_at.astimezone(timezone.utc),
                     window.resets_at.astimezone(timezone.utc) if window.resets_at else None,
                 )
+                key = (snapshot.provider_id, window.id)
+                history = self._history.setdefault(key, [])
+                stamp = snapshot.fetched_at.astimezone(timezone.utc)
+                history.append((stamp, float(window.used_percent)))
+                cutoff = stamp.timestamp() - 45 * 60
+                self._history[key] = [(when, value) for when, value in history if when.timestamp() >= cutoff][-10:]
+
+
+def _robust_burn_rate(samples: list[tuple[datetime, float]]) -> float | None:
+    """Return a median percent/hour slope from recent successful samples."""
+    if len(samples) < 2:
+        return None
+    slopes: list[float] = []
+    for (left_time, left_value), (right_time, right_value) in zip(samples, samples[1:]):
+        elapsed = (right_time - left_time).total_seconds()
+        delta = right_value - left_value
+        if elapsed >= 120 and delta > 0:
+            slopes.append(delta * 3600 / elapsed)
+    if not slopes:
+        return None
+    return float(median(slopes))
 
 
 def _duration(seconds: float) -> str:

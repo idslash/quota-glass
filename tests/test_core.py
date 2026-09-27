@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from limitbar.cache import SnapshotCache
 from limitbar.logging_setup import SecretFilter
 from limitbar.models import Health, LimitWindow, UsageSnapshot, format_reset
-from limitbar.notifications import NotificationEngine
+from limitbar.notifications import NotificationEngine, _robust_burn_rate
 from limitbar.config import Settings
 from limitbar.poller import Backoff
 
@@ -86,3 +86,16 @@ def test_notifications_detect_reset_completion():
     notices = engine.evaluate(after, now + timedelta(minutes=3))
     assert len(notices) == 1
     assert "восстановлен" in notices[0].message
+
+
+def test_burn_rate_uses_recent_median_slopes():
+    start = datetime(2026, 9, 27, 12, tzinfo=timezone.utc)
+    samples = [
+        (start, 10),
+        (start + timedelta(minutes=10), 12),
+        (start + timedelta(minutes=20), 14),
+        (start + timedelta(minutes=30), 40),
+    ]
+    rate = _robust_burn_rate(samples)
+    assert rate is not None
+    assert 10 <= rate <= 14
