@@ -326,6 +326,7 @@ int main(int argc,char** argv) {
     g_glass.SetEdgeConfig(edge);
     bool done=false; State state; auto lastRead=std::chrono::steady_clock::now()-std::chrono::seconds(5); int frame=0;
     HWND captureForeground=GetForegroundWindow();
+    auto captureRefreshUntil=std::chrono::steady_clock::time_point::min();
     while(!done){ MSG msg; while(PeekMessage(&msg,nullptr,0,0,PM_REMOVE)){TranslateMessage(&msg);DispatchMessage(&msg);if(msg.message==WM_QUIT)done=true;} if(done)break;
         if(g_resize_w&&g_resize_h){CleanupTarget();g_swap->ResizeBuffers(0,g_resize_w,g_resize_h,DXGI_FORMAT_UNKNOWN,0);g_resize_w=g_resize_h=0;CreateTarget();}
         if(g_taskbar){if(frame%60==0)PositionTaskbar();else KeepTaskbarVisible();}
@@ -347,15 +348,18 @@ int main(int argc,char** argv) {
             // minimizes or switches windows. Refresh only on foreground
             // transitions: briefly exclude our overlay, let DWM settle,
             // capture the new desktop, then make the overlay capturable again.
-            if(frame>30 && frame%6==0) {
+            if(frame>30) {
                 HWND currentForeground=GetForegroundWindow();
                 if(currentForeground!=captureForeground) {
+                    captureForeground=currentForeground;
+                    captureRefreshUntil=std::chrono::steady_clock::now()+std::chrono::milliseconds(900);
+                }
+                if(frame%4==0 && std::chrono::steady_clock::now()<captureRefreshUntil) {
                     if(g_desktop_parented) ShowWindow(g_hwnd,SW_HIDE);
                     SetWindowDisplayAffinity(g_hwnd,WDA_EXCLUDEFROMCAPTURE);
-                    DwmFlush(); Sleep(20); g_backdrop.Capture(); DwmFlush();
+                    DwmFlush(); Sleep(16); g_backdrop.Capture(); DwmFlush();
                     if(g_desktop_parented) ShowWindow(g_hwnd,SW_SHOWNA);
                     SetWindowDisplayAffinity(g_hwnd,0);
-                    captureForeground=currentForeground;
                 }
             }
         } else if((g_force_backdrop_capture || frame%2==0) && !g_dragging) {

@@ -80,7 +80,9 @@ class PollCoordinator:
             thread.join(timeout=2)
 
     def _run_provider(self, adapter: UsageAdapter) -> None:
-        backoff = Backoff(self.poll_seconds)
+        # These adapters are local/low-cost reads. A half-hour backoff leaves
+        # the widget misleadingly stale after a reset, so recover within 10m.
+        backoff = Backoff(self.poll_seconds, maximum_seconds=600)
         event = self._refresh[adapter.provider_id]
         delay = 0
         while not self._stop.is_set():
@@ -92,7 +94,7 @@ class PollCoordinator:
             try:
                 snapshot = adapter.fetch()
                 self._record(snapshot)
-                delay = backoff.success()
+                delay = _next_success_delay(snapshot, backoff.success())
             except ProviderError as error:
                 LOG.warning("%s refresh failed: %s", adapter.provider_id, error)
                 self._publish_failure(adapter, str(error))
@@ -126,3 +128,21 @@ class PollCoordinator:
                 message=message,
             )
         self.callback(adapter.provider_id, snapshot)
+
+
+def _next_success_delay(snapshot: UsageSnapshot, normal_delay: int, now: datetime | None = None) -> int:
+    """Poll quickly around a reset so an exhausted window never lingers."""
+    now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    reset_seconds = [
+        (window.resets_at.astimezone(timezone.utc) - now).total_seconds()
+        for window in snapshot.windows
+        if window.resets_at is not None
+    ]
+    if not reset_seconds:
+        return normal_delay
+    nearest = min(reset_seconds)
+    if nearest <= 15:
+        return 10
+    if nearest < normal_delay:
+        return max(10, min(normal_delay, round(nearest) + 3))
+    return normal_delay

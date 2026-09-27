@@ -7,7 +7,7 @@ from limitbar.logging_setup import SecretFilter
 from limitbar.models import Health, LimitWindow, UsageSnapshot, format_reset
 from limitbar.notifications import NotificationEngine, _robust_burn_rate
 from limitbar.config import Settings
-from limitbar.poller import Backoff
+from limitbar.poller import Backoff, _next_success_delay
 
 
 def snapshot() -> UsageSnapshot:
@@ -43,6 +43,25 @@ def test_backoff_respects_server_hint_and_resets():
     assert backoff.failure(retry_after_seconds=900, jitter=1) == 900
     assert backoff.success() == 180
     assert backoff.failure(jitter=1) == 180
+
+
+def test_poller_refreshes_immediately_around_reset():
+    now = datetime(2026, 9, 27, 12, tzinfo=timezone.utc)
+    current = UsageSnapshot(
+        "codex",
+        "ChatGPT",
+        (LimitWindow("five_hour", "5h", 100, now + timedelta(seconds=8), 300),),
+        fetched_at=now,
+    )
+    assert _next_success_delay(current, 180, now) == 10
+
+    upcoming = UsageSnapshot(
+        "codex",
+        "ChatGPT",
+        (LimitWindow("five_hour", "5h", 99, now + timedelta(seconds=75), 300),),
+        fetched_at=now,
+    )
+    assert _next_success_delay(upcoming, 180, now) == 78
 
 
 def test_format_reset_is_compact():
