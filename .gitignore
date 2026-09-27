@@ -1,0 +1,20 @@
+# Local Python/build state
+.pytest_cache/
+build/
+*.egg-info/
+__pycache__/
+*.pyc
+native/**/bin/
+native/**/obj/
+
+# Local credentials and runtime state
+config.json
+*.token
+*.secrets*
+
+# Generated binaries and historical release archives
+dist/
+LimitBar-v*.zip
+LimitBar-v*.zip.sha256
+LimitBar.spec
+SHA256SUMS.txt

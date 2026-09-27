@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "limitbar"
+version = "0.3.0"
+description = "Minimal Windows taskbar companion for Claude and Codex usage limits"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+  "Pillow>=11.0,<13",
+  "pystray>=0.19.5,<1",
+]
+
+[project.scripts]
+limitbar = "limitbar.app:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

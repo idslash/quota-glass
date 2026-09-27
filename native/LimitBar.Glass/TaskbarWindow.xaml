@@ -1,0 +1,31 @@
+<Window
+    x:Class="LimitBar.Glass.TaskbarWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:lg="using:LiquidGlassWinUI">
+    <Grid Background="Transparent">
+        <Border x:Name="GlassSurface" CornerRadius="14" Padding="12,5" BorderBrush="#78DDEFFF" BorderThickness="1" PointerPressed="GlassSurface_PointerPressed">
+            <Border.Background>
+                <lg:LiquidGlassBrush BlurAmount="1.6" BloomAmount="0.15" Brightness="0.04"
+                    Contrast="1.08" Saturation="1.12" RefThickness="30" RefFactor="2.45"
+                    RefDispersion="2.8" RefFresnelFactor="20" GlareAngle="-34" GlareFactor="38"
+                    ShapeRadius="0.88" ShapeRoundness="4.4" TintA="0.10" TintR="16" TintG="30" TintB="48" />
+            </Border.Background>
+            <Grid ColumnDefinitions="*,1,*">
+                <Grid Grid.Column="0" ColumnDefinitions="Auto,*,Auto" RowDefinitions="Auto,3">
+                    <Ellipse Width="7" Height="7" Fill="#FFFFB36B" Margin="0,0,7,0" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="1" x:Name="ClaudeName" Text="Claude" FontSize="11" FontWeight="SemiBold" Foreground="White" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="2" x:Name="ClaudeValue" Text="—" FontSize="11" FontWeight="SemiBold" Foreground="#FF62E8B1" Margin="8,0,0,0" VerticalAlignment="Center" />
+                    <ProgressBar Grid.Row="1" Grid.ColumnSpan="3" x:Name="ClaudeBar" Minimum="0" Maximum="100" Value="0" Height="3" Margin="0,3,0,0" Foreground="#FF67A6FF" Background="#382B3A4E" />
+                </Grid>
+                <Rectangle Grid.Column="1" Width="1" Fill="#45D8ECFF" Margin="11,-1" />
+                <Grid Grid.Column="2" ColumnDefinitions="Auto,*,Auto" RowDefinitions="Auto,3">
+                    <Ellipse Width="7" Height="7" Fill="#FF82B5FF" Margin="0,0,7,0" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="1" x:Name="CodexName" Text="ChatGPT" FontSize="11" FontWeight="SemiBold" Foreground="White" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="2" x:Name="CodexValue" Text="—" FontSize="11" FontWeight="SemiBold" Foreground="#FF62E8B1" Margin="8,0,0,0" VerticalAlignment="Center" />
+                    <ProgressBar Grid.Row="1" Grid.ColumnSpan="3" x:Name="CodexBar" Minimum="0" Maximum="100" Value="0" Height="3" Margin="0,3,0,0" Foreground="#FF67A6FF" Background="#382B3A4E" />
+                </Grid>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>

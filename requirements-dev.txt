@@ -1,0 +1,4 @@
+-e .
+pytest>=8.3,<9
+pyinstaller>=6.11,<7
+

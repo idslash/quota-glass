@@ -1,0 +1,14 @@
+{
+  "poll_seconds": 180,
+  "show_widget": true,
+  "dock_in_taskbar": true,
+  "show_desktop_widget": true,
+  "start_with_windows": false,
+  "interface_scale": 1.0,
+  "text_scale": 1.0,
+  "allow_screenshots": false,
+  "providers": {
+    "claude": true,
+    "codex": true
+  }
+}
