@@ -416,13 +416,6 @@ static bool DesktopIsForeground(){
     return _wcsicmp(cls,L"Progman")==0 || _wcsicmp(cls,L"WorkerW")==0 ||
            _wcsicmp(cls,L"SHELLDLL_DefView")==0 || _wcsicmp(cls,L"Desktop")==0;
 }
-static bool IsDesktopSurface(HWND hwnd){
-    if(!hwnd)return true;
-    wchar_t cls[96]{}; GetClassNameW(hwnd,cls,(int)std::size(cls));
-    return _wcsicmp(cls,L"Progman")==0 || _wcsicmp(cls,L"WorkerW")==0 ||
-           _wcsicmp(cls,L"SHELLDLL_DefView")==0 || _wcsicmp(cls,L"Desktop")==0 ||
-           _wcsicmp(cls,L"Shell_TrayWnd")==0;
-}
 static void KeepDesktopVisible(){
     if(IsIconic(g_hwnd))ShowWindowAsync(g_hwnd,SW_RESTORE);
     else if(!IsWindowVisible(g_hwnd))ShowWindowAsync(g_hwnd,SW_SHOWNOACTIVATE);
@@ -430,20 +423,8 @@ static void KeepDesktopVisible(){
     // desktop card is temporarily topmost so it is visible above the wallpaper,
     // while ordinary application windows are still allowed to cover it.
     // As soon as the user returns to an app, drop the topmost state again.
-    if(DesktopIsForeground()){
-        // Explorer can leave Progman foreground for a short time while a
-        // restored application is already visible. Probe the surface under
-        // the card after a temporary demotion; this prevents the card from
-        // intercepting the first click on that application.
-        SetWindowPos(g_hwnd,HWND_NOTOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE|SWP_NOOWNERZORDER|SWP_SHOWWINDOW);
-        RECT rect{}; GetWindowRect(g_hwnd,&rect);
-        POINT probe{(rect.left+rect.right)/2,(rect.top+rect.bottom)/2};
-        HWND under=WindowFromPoint(probe);
-        if(IsDesktopSurface(under))
-            SetWindowPos(g_hwnd,HWND_TOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE|SWP_NOOWNERZORDER|SWP_SHOWWINDOW);
-    } else {
-        SetWindowPos(g_hwnd,HWND_NOTOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE|SWP_NOOWNERZORDER|SWP_SHOWWINDOW);
-    }
+    const HWND z=DesktopIsForeground()?HWND_TOPMOST:HWND_NOTOPMOST;
+    SetWindowPos(g_hwnd,z,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE|SWP_NOOWNERZORDER|SWP_SHOWWINDOW);
 }
 static bool CreateDevice(HWND hwnd){DXGI_SWAP_CHAIN_DESC sd{};sd.BufferCount=2;sd.BufferDesc.Format=DXGI_FORMAT_R8G8B8A8_UNORM;sd.BufferUsage=DXGI_USAGE_RENDER_TARGET_OUTPUT;sd.OutputWindow=hwnd;sd.SampleDesc.Count=1;sd.Windowed=TRUE;sd.SwapEffect=DXGI_SWAP_EFFECT_DISCARD;D3D_FEATURE_LEVEL fl;D3D_FEATURE_LEVEL levels[]={D3D_FEATURE_LEVEL_11_0,D3D_FEATURE_LEVEL_10_0};HRESULT hr=D3D11CreateDeviceAndSwapChain(nullptr,D3D_DRIVER_TYPE_HARDWARE,nullptr,0,levels,2,D3D11_SDK_VERSION,&sd,&g_swap,&g_device,&fl,&g_context);if(FAILED(hr))return false;CreateTarget();return true;}
 static void CreateTarget(){ID3D11Texture2D* b=nullptr;g_swap->GetBuffer(0,IID_PPV_ARGS(&b));g_device->CreateRenderTargetView(b,nullptr,&g_target);b->Release();}
