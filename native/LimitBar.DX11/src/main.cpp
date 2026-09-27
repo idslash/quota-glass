@@ -32,10 +32,13 @@ static UINT g_resize_w = 0, g_resize_h = 0;
 static Glass::Backdrop g_backdrop;
 static Glass::Renderer g_glass;
 static bool g_taskbar = false;
+static bool g_taskbar_compact = false;
 static bool g_desktop_parented = false;
 static HWND g_desktop_host = nullptr;
 static constexpr int kTaskbarWidth = 520;
 static constexpr int kTaskbarHeight = 44;
+static constexpr int kTaskbarCompactWidth = 340;
+static constexpr int kTaskbarCompactHeight = 44;
 static int g_taskbar_width = kTaskbarWidth;
 static int g_taskbar_height = kTaskbarHeight;
 static HWND g_hwnd = nullptr;
@@ -48,6 +51,7 @@ static bool g_force_backdrop_capture = true;
 static bool g_allow_capture = false;
 static POINT g_drag_cursor{};
 static RECT g_drag_window{};
+static const auto g_started_at = std::chrono::steady_clock::now();
 
 struct Limit { std::string id; double used = -1; std::string reset; };
 struct Provider { std::string name; std::vector<Limit> limits; };
@@ -115,6 +119,21 @@ static const Limit* Primary(const Provider& p) {
 static ImU32 UsageColor(double used) { return used>=85?C(246,132,148):used>=65?C(242,184,112):C(103,166,255); }
 static ImU32 LeftColor(double left) { return left<=15?C(246,145,156):left<=35?C(244,198,130):C(168,224,205); }
 static bool HasPrefix(const std::string& value,const char* prefix) { return value.rfind(prefix,0)==0; }
+static const Limit* TaskbarLimit(const Provider& p) {
+    // The compact taskbar glance is intentionally stable: it always mirrors
+    // the five-hour row from the detailed card. Weekly and reserve limits stay
+    // visible in the desktop widget instead of silently replacing this value.
+    for (const auto& x:p.limits) if (HasPrefix(x.id,"five_hour")) return &x;
+    return Primary(p);
+}
+static const Limit* TaskbarAttentionLimit(const Provider& p) {
+    const Limit* best=nullptr;
+    for (const auto& x:p.limits) {
+        if (HasPrefix(x.id,"five_hour") || x.used<65) continue;
+        if (!best || x.used>best->used) best=&x;
+    }
+    return best;
+}
 static bool IsEstimated(const Limit& l) { return l.id.find("_estimated")!=std::string::npos; }
 static std::string LimitName(const Limit& l) { return HasPrefix(l.id,"five_hour")?"5-hour limit":HasPrefix(l.id,"seven_day")?"Weekly - all models":l.id=="gpt_reserve"?"GPT reserve":l.id; }
 static bool ParseIsoUtc(const std::string& value, std::chrono::system_clock::time_point& out) {
@@ -243,29 +262,76 @@ static void DrawDesktop(const State& state,int w,int h,float scale) {
     AddText(d,g_regular,12*text,ImVec2(28*scale,h-43*scale),C(194,207,223),"Updates automatically");
     AddText(d,g_semibold,11*text,ImVec2(w-116*scale,h-43*scale),C(215,225,240),"LIMITBAR");
 }
-static void TaskProvider(ImDrawList* d,const Provider& p,float x,float y,float width,float scale,ImU32 accent) {
-    const Limit* l=Primary(p); double used=l?l->used:-1, left=used<0?-1:100-used; float text=scale*g_text_scale;
+static const char* TaskWindowLabel(const Limit* l) {
+    if(!l)return "";
+    if(HasPrefix(l->id,"five_hour"))return "5h";
+    if(HasPrefix(l->id,"seven_day"))return "7d";
+    if(l->id=="gpt_reserve")return "reserve";
+    return "limit";
+}
+struct TaskSlide { const Limit* current=nullptr; const Limit* incoming=nullptr; float progress=0; };
+static TaskSlide TaskbarSlide(const Provider& p) {
+    const Limit* base=TaskbarLimit(p); const Limit* attention=TaskbarAttentionLimit(p);
+    if(!attention)return {base,nullptr,0};
+    const double elapsed=std::chrono::duration<double>(std::chrono::steady_clock::now()-g_started_at).count();
+    const double phase=std::fmod(elapsed,90.0); constexpr double transition=.65;
+    auto smooth=[](double value){float t=(float)std::clamp(value,0.0,1.0);return t*t*(3.f-2.f*t);};
+    if(phase<70.0)return {base,nullptr,0};
+    if(phase<70.0+transition)return {base,attention,smooth((phase-70.0)/transition)};
+    if(phase<80.0)return {attention,nullptr,0};
+    if(phase<80.0+transition)return {attention,base,smooth((phase-80.0)/transition)};
+    return {base,nullptr,0};
+}
+static void TaskProviderContent(ImDrawList* d,const Provider& p,const Limit* l,float x,float y,float width,float scale,ImU32 accent,bool compact) {
+    double used=l?l->used:-1, left=used<0?-1:100-used; float text=scale*g_text_scale;
+    if(compact) {
+        const float nameSize=11.5f*text,valueSize=12.5f*text;
+        d->AddCircleFilled(ImVec2(x+3.5f*scale,y+5.5f*scale),3.2f*scale,accent);
+        std::string name=p.name+" "+TaskWindowLabel(l);
+        AddText(d,g_semibold,nameSize,ImVec2(x+12*scale,y-3*scale),C(248,251,255),Ellipsize(name,width-55*scale,g_semibold,nameSize));
+        std::string v=left<0?"--":std::to_string((int)std::round(left))+"%"; float vw=g_semibold->CalcTextSizeA(valueSize,FLT_MAX,0,v.c_str()).x;
+        AddReadableText(d,g_semibold,valueSize,ImVec2(x+width-vw,y-3*scale),left<0?C(210,220,232):LeftColor(left),v,scale);
+        Progress(d,ImVec2(x,y+13*scale),ImVec2(x+width,y+15.5f*scale),used);
+        return;
+    }
     const float nameSize=14.5f*text,valueSize=15.5f*text,detailSize=10.5f*text;
     d->AddCircleFilled(ImVec2(x+5*scale,y+9*scale),4.2f*scale,accent);
     AddText(d,g_semibold,nameSize,ImVec2(x+15*scale,y-1*scale),C(250,252,255),Ellipsize(p.name,width-78*scale,g_semibold,nameSize));
     std::string v=left<0?"--":std::to_string((int)std::round(left))+"%"; float vw=g_semibold->CalcTextSizeA(valueSize,FLT_MAX,0,v.c_str()).x;
     AddReadableText(d,g_semibold,valueSize,ImVec2(x+width-vw,y-2*scale),left<0?C(210,220,232):LeftColor(left),v,scale);
-    std::string detail=l?((HasPrefix(l->id,"five_hour")?"5h  ·  ":"7d  ·  ")+TaskReset(*l)):"connecting";
+    std::string detail=l?(std::string(TaskWindowLabel(l))+"  ·  "+TaskReset(*l)):"connecting";
     AddText(d,g_regular,detailSize,ImVec2(x+15*scale,y+19*scale),C(184,198,214),Ellipsize(detail,width-15*scale,g_regular,detailSize));
     Progress(d,ImVec2(x,y+34*scale),ImVec2(x+width,y+37*scale),used);
+}
+static void TaskProvider(ImDrawList* d,const Provider& p,float x,float y,float width,float scale,ImU32 accent,bool compact=false) {
+    TaskSlide slide=TaskbarSlide(p);
+    d->PushClipRect(ImVec2(x-2*scale,y-4*scale),ImVec2(x+width+2*scale,y+(compact?18:40)*scale),true);
+    if(slide.incoming) {
+        float offset=(width+18*scale)*slide.progress;
+        TaskProviderContent(d,p,slide.current,x-offset,y,width,scale,accent,compact);
+        TaskProviderContent(d,p,slide.incoming,x+width+18*scale-offset,y,width,scale,accent,compact);
+    } else TaskProviderContent(d,p,slide.current,x,y,width,scale,accent,compact);
+    d->PopClipRect();
 }
 static void DrawTaskbar(const State& state,int w,int h,float scale) {
     auto* d=ImGui::GetBackgroundDrawList();
     d->AddRectFilled(ImVec2(1,1),ImVec2(w-1.f,h-1.f),C(15,19,27,168),14*scale);
     d->AddRectFilled(ImVec2(14*scale,2*scale),ImVec2(w-14*scale,3*scale),C(255,255,255,11),1*scale);
-    float pad=15*scale,gap=34*scale,col=(w-2*pad-gap)/2;
-    float y=(h-38*scale)*.5f; TaskProvider(d,state.claude,pad,y,col,scale,C(255,181,101));
-    TaskProvider(d,state.codex,pad+col+gap,y,col,scale,C(130,181,255));
+    if(g_taskbar_compact) {
+        float pad=12*scale,rowWidth=w-2*pad,y=(h-35*scale)*.5f;
+        TaskProvider(d,state.claude,pad,y,rowWidth,scale,C(255,181,101),true);
+        TaskProvider(d,state.codex,pad,y+19*scale,rowWidth,scale,C(130,181,255),true);
+    } else {
+        float pad=15*scale,gap=34*scale,col=(w-2*pad-gap)/2;
+        float y=(h-38*scale)*.5f;
+        TaskProvider(d,state.claude,pad,y,col,scale,C(255,181,101));
+        TaskProvider(d,state.codex,pad+col+gap,y,col,scale,C(130,181,255));
+    }
 }
 
 int main(int argc,char** argv) {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-    for(int i=1;i<argc;++i){std::string arg=argv[i];if(arg=="--taskbar")g_taskbar=true;else if(arg=="--allow-capture")g_allow_capture=true;else if(arg.rfind("--scale=",0)==0)g_interface_scale=std::clamp(std::stof(arg.substr(8)),1.f,1.5f);else if(arg.rfind("--text-scale=",0)==0)g_text_scale=std::clamp(std::stof(arg.substr(13)),1.f,1.3f);}
+    for(int i=1;i<argc;++i){std::string arg=argv[i];if(arg=="--taskbar")g_taskbar=true;else if(arg=="--compact")g_taskbar_compact=true;else if(arg=="--allow-capture")g_allow_capture=true;else if(arg.rfind("--scale=",0)==0)g_interface_scale=std::clamp(std::stof(arg.substr(8)),1.f,1.5f);else if(arg.rfind("--text-scale=",0)==0)g_text_scale=std::clamp(std::stof(arg.substr(13)),1.f,1.3f);}
     const wchar_t* cls=g_taskbar?L"LimitBarGlassTaskbar":L"LimitBarGlassDesktop";
     HANDLE mutex=CreateMutexW(nullptr,TRUE,g_taskbar?L"Local\\LimitBarGlassTaskbar":L"Local\\LimitBarGlassDesktop");
     if (GetLastError()==ERROR_ALREADY_EXISTS) {
@@ -277,7 +343,7 @@ int main(int argc,char** argv) {
     }
     ImGui_ImplWin32_EnableDpiAwareness();
     WNDCLASSEXW wc={sizeof(wc),CS_CLASSDC,WndProc,0,0,GetModuleHandle(nullptr),nullptr,nullptr,nullptr,nullptr,cls,nullptr}; RegisterClassExW(&wc);
-    int width=g_taskbar?kTaskbarWidth:(int)std::round(520*g_interface_scale),height=g_taskbar?kTaskbarHeight:(int)std::round(660*g_interface_scale),x=0,y=0;
+    int width=g_taskbar?(g_taskbar_compact?kTaskbarCompactWidth:kTaskbarWidth):(int)std::round(520*g_interface_scale),height=g_taskbar?(g_taskbar_compact?kTaskbarCompactHeight:kTaskbarHeight):(int)std::round(660*g_interface_scale),x=0,y=0;
     if (!g_taskbar) { RECT wa{}; SystemParametersInfoW(SPI_GETWORKAREA,0,&wa,0); x=wa.right-width-24; y=wa.top+24; }
     DWORD ex=WS_EX_LAYERED|WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE|(g_taskbar?WS_EX_TOPMOST:0);
     g_hwnd=CreateWindowExW(ex,cls,L"LimitBar Glass",WS_POPUP,x,y,width,height,nullptr,nullptr,wc.hInstance,nullptr);
@@ -295,6 +361,10 @@ int main(int argc,char** argv) {
     ImGui_ImplWin32_Init(g_hwnd); ImGui_ImplDX11_Init(g_device,g_context);
     if(!g_glass.Init(g_device,g_context)) return 2; Glass::g=&g_glass; g_backdrop.Init(g_device,g_context,g_hwnd);
     bool qaCapture = g_allow_capture || GetEnvironmentVariableW(L"LIMITBAR_ALLOW_CAPTURE", nullptr, 0) > 0;
+    // Backdrop initialization protects every window from capture. The taskbar
+    // island has no refracted desktop texture, so screenshot mode can expose it
+    // immediately without the hide/capture/show cycle used by the large card.
+    if(g_taskbar && qaCapture) SetWindowDisplayAffinity(g_hwnd,0);
     ShowWindow(g_hwnd,SW_SHOWNA); UpdateWindow(g_hwnd); if(g_taskbar) PositionTaskbar();
     if (!g_taskbar) KeepDesktopVisible();
     // Bright, refractive liquid glass: a clear centre for legibility with a
@@ -334,7 +404,7 @@ int main(int argc,char** argv) {
         // During a drag the existing full-screen texture is re-sliced at the
         // new window origin. Capturing concurrently makes the backdrop appear
         // to jump a frame behind the window. Refresh once the pointer releases.
-        if(qaCapture) {
+        if(!g_taskbar && qaCapture) {
             // Desktop Duplication can return an empty initial frame while the
             // overlay is hidden. Warm it up while the visible window is still
             // excluded, freeze the last clean frame, then reveal to Snipping
@@ -362,7 +432,7 @@ int main(int argc,char** argv) {
                     SetWindowDisplayAffinity(g_hwnd,0);
                 }
             }
-        } else if((g_force_backdrop_capture || frame%2==0) && !g_dragging) {
+        } else if(!g_taskbar && (g_force_backdrop_capture || frame%2==0) && !g_dragging) {
             g_backdrop.Capture(); g_force_backdrop_capture=false;
         }
         auto now=std::chrono::steady_clock::now(); if(now-lastRead>std::chrono::seconds(2)){state=ReadState();lastRead=now;}
@@ -372,7 +442,7 @@ int main(int argc,char** argv) {
         // The windows have deliberately fixed physical dimensions.  A layout scale
         // derived from the client rect keeps the typography inside those dimensions
         // on 100/125/150/200% Windows scaling instead of multiplying it twice.
-        float uiScale = g_taskbar ? std::min({std::max(dpi,1.2f), w / (float)kTaskbarWidth, h / (float)kTaskbarHeight}) : std::min({dpi, w / 520.f, h / 660.f});
+        float uiScale = g_taskbar ? std::min({std::max(dpi,1.2f), w / (float)(g_taskbar_compact?kTaskbarCompactWidth:kTaskbarWidth), h / (float)(g_taskbar_compact?kTaskbarCompactHeight:kTaskbarHeight)}) : std::min({dpi, w / 520.f, h / 660.f});
         if(g_taskbar)DrawTaskbar(state,w,h,uiScale);else DrawDesktop(state,w,h,uiScale);
         ImGui::Render();const float clear[4]={0,0,0,0};g_context->OMSetRenderTargets(1,&g_target,nullptr);g_context->ClearRenderTargetView(g_target,clear);
         D3D11_VIEWPORT vp{};vp.Width=(float)w;vp.Height=(float)h;vp.MaxDepth=1;g_context->RSSetViewports(1,&vp);
@@ -402,8 +472,8 @@ static void PositionTaskbar(){
     RECT tray=r;HWND notify=FindWindowExW(tb,nullptr,L"TrayNotifyWnd",nullptr);if(notify)GetWindowRect(notify,&tray);
     int taskh=r.bottom-r.top;
     int available=(int)(tray.left-r.left-32);
-    int width=std::clamp(available,560,640);
-    int height=std::clamp(taskh-10,44,60);
+    int width=g_taskbar_compact?std::clamp(available,320,370):std::clamp(available,560,640);
+    int height=g_taskbar_compact?std::clamp(taskh-6,44,48):std::clamp(taskh-10,44,60);
     int x=tray.left-width-16;
     int y=r.top+std::max(0,(taskh-height)/2);
     bool resized=width!=g_taskbar_width||height!=g_taskbar_height;

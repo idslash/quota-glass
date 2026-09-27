@@ -59,6 +59,8 @@ class NativeLimitBarUI:
             return
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         options = [f"--scale={self.settings.interface_scale}", f"--text-scale={self.settings.text_scale}"]
+        if "--taskbar" in arguments and self.settings.taskbar_mode == "compact":
+            options.append("--compact")
         if self.settings.allow_screenshots:
             options.append("--allow-capture")
         self._children.append(subprocess.Popen([str(self._exe), *arguments, *options], creationflags=flags))
@@ -110,6 +112,20 @@ class NativeLimitBarUI:
             pystray.MenuItem("Reset completed", lambda _i, _m: self.events.put(("_notify_complete", not self.settings.notify_reset_complete)), checked=lambda _m: self.settings.notify_reset_complete),
             pystray.MenuItem("Quiet hours 23:00-08:00", lambda _i, _m: self.events.put(("_quiet_hours", not self.settings.quiet_hours)), checked=lambda _m: self.settings.quiet_hours),
         )
+        taskbar_layout_menu = pystray.Menu(
+            pystray.MenuItem(
+                "Standard",
+                lambda _i, _m: self.events.put(("_taskbar_mode", "standard")),
+                checked=lambda _m: self.settings.taskbar_mode == "standard",
+                radio=True,
+            ),
+            pystray.MenuItem(
+                "Compact",
+                lambda _i, _m: self.events.put(("_taskbar_mode", "compact")),
+                checked=lambda _m: self.settings.taskbar_mode == "compact",
+                radio=True,
+            ),
+        )
         menu = pystray.Menu(
             pystray.MenuItem("Show desktop widget", lambda _i, _m: self.events.put(("_desktop", True)), default=True),
             pystray.MenuItem("Refresh", lambda _i, _m: self.events.put(("_refresh", True))),
@@ -118,6 +134,7 @@ class NativeLimitBarUI:
                 lambda _i, _m: self.events.put(("_taskbar", not self.settings.show_widget)),
                 checked=lambda _m: self.settings.show_widget,
             ),
+            pystray.MenuItem("Taskbar layout", taskbar_layout_menu),
             pystray.MenuItem("Interface size", interface_menu),
             pystray.MenuItem("Text size", text_menu),
             pystray.MenuItem("Notifications", notifications_menu),
@@ -167,6 +184,11 @@ class NativeLimitBarUI:
                     self._tray.update_menu()
                 elif key == "_text_scale":
                     self.settings.text_scale = float(value)
+                    self.settings.save()
+                    self._restart_frontends()
+                    self._tray.update_menu()
+                elif key == "_taskbar_mode":
+                    self.settings.taskbar_mode = str(value)
                     self.settings.save()
                     self._restart_frontends()
                     self._tray.update_menu()

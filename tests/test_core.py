@@ -64,6 +64,13 @@ def test_poller_refreshes_immediately_around_reset():
     assert _next_success_delay(upcoming, 180, now) == 78
 
 
+def test_taskbar_layout_setting_round_trips(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    settings = Settings(taskbar_mode="compact")
+    settings.save()
+    assert Settings.load().taskbar_mode == "compact"
+
+
 def test_format_reset_is_compact():
     now = datetime(2026, 9, 27, 10, 0, tzinfo=timezone.utc)
     assert format_reset(now + timedelta(minutes=42), now) == "reset 42m"

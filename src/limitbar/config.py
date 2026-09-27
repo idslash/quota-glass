@@ -28,6 +28,7 @@ class Settings:
     start_with_windows: bool = False
     interface_scale: float = 1.0
     text_scale: float = 1.0
+    taskbar_mode: str = "standard"
     allow_screenshots: bool = False
     notifications_enabled: bool = True
     notify_reset_soon: bool = True
@@ -56,6 +57,7 @@ class Settings:
                 start_with_windows=bool(value.get("start_with_windows", False)),
                 interface_scale=_choice(value.get("interface_scale"), (1.0, 1.25, 1.5), 1.0),
                 text_scale=_choice(value.get("text_scale"), (1.0, 1.15, 1.3), 1.0),
+                taskbar_mode=value.get("taskbar_mode") if value.get("taskbar_mode") in {"standard", "compact"} else "standard",
                 allow_screenshots=bool(value.get("allow_screenshots", False)),
                 notifications_enabled=bool(value.get("notifications_enabled", True)),
                 notify_reset_soon=bool(value.get("notify_reset_soon", True)),
@@ -84,6 +86,7 @@ class Settings:
             "start_with_windows": self.start_with_windows,
             "interface_scale": self.interface_scale,
             "text_scale": self.text_scale,
+            "taskbar_mode": self.taskbar_mode,
             "allow_screenshots": self.allow_screenshots,
             "notifications_enabled": self.notifications_enabled,
             "notify_reset_soon": self.notify_reset_soon,
