@@ -2,7 +2,7 @@
 
 Нативный Windows‑индикатор лимитов Claude Code и ChatGPT/Codex: компактный **taskbar island 520×44 px** привязан к правой части панели, а отдельная карточка показывает все доступные окна, проценты остатка и время до reset.
 
-![LimitBar preview](assets/preview.png)
+![LimitBar preview](assets/preview-v0.7.png)
 
 
 ## Что изменилось в 0.5
