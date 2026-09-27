@@ -56,7 +56,11 @@ def test_codex_parser_selects_duration_instead_of_position():
                 "codex": {
                     "primary": {"usedPercent": 42, "windowDurationMins": 10080, "resetsAt": 1790726400},
                     "secondary": {"usedPercent": 15, "windowDurationMins": 300, "resetsAt": 1790600000},
-                }
+                },
+                "base_model_inference": {
+                    "limitName": "gpt-reserve",
+                    "primary": {"usedPercent": 46, "windowDurationMins": 10080, "resetsAt": 1790675734},
+                },
             }
         },
     }
@@ -64,6 +68,7 @@ def test_codex_parser_selects_duration_instead_of_position():
     assert snapshot.window("seven_day").remaining_percent == 58
     assert snapshot.window("five_hour").remaining_percent == 85
     assert snapshot.window("five_hour").resets_at.tzinfo == timezone.utc
+    assert snapshot.window("gpt_reserve").remaining_percent == 54
 
 
 def test_codex_parser_accepts_legacy_bucket_and_snake_case():

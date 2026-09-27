@@ -116,7 +116,7 @@ static ImU32 UsageColor(double used) { return used>=85?C(246,132,148):used>=65?C
 static ImU32 LeftColor(double left) { return left<=15?C(246,145,156):left<=35?C(244,198,130):C(168,224,205); }
 static bool HasPrefix(const std::string& value,const char* prefix) { return value.rfind(prefix,0)==0; }
 static bool IsEstimated(const Limit& l) { return l.id.find("_estimated")!=std::string::npos; }
-static std::string LimitName(const Limit& l) { return HasPrefix(l.id,"five_hour")?"5-hour limit":HasPrefix(l.id,"seven_day")?"Weekly - all models":l.id; }
+static std::string LimitName(const Limit& l) { return HasPrefix(l.id,"five_hour")?"5-hour limit":HasPrefix(l.id,"seven_day")?"Weekly - all models":l.id=="gpt_reserve"?"GPT reserve":l.id; }
 static bool ParseIsoUtc(const std::string& value, std::chrono::system_clock::time_point& out) {
     if (value.size() < 19) return false;
     std::tm tm{};
@@ -214,7 +214,7 @@ static void ProviderCard(ImDrawList* d,const Provider& p,float x,float y,float w
     if(p.limits.empty()) { AddText(d,g_regular,14*text,ImVec2(x+22*scale,y+78*scale),C(214,224,235),"Waiting for usage data..."); return; }
     int index=0;
     for(const auto& l:p.limits) {
-        if(index>=2) break;
+        if(index>=3) break;
         float top=y+(57+index*72)*scale;
         std::string pct=l.used<0?"-":std::to_string((int)std::round(l.used))+"%";
         AddText(d,g_semibold,14*text,ImVec2(x+22*scale,top),C(250,252,255),Ellipsize(LimitName(l),width-120*scale,g_semibold,14*text));
@@ -228,15 +228,18 @@ static void ProviderCard(ImDrawList* d,const Provider& p,float x,float y,float w
 }
 static void DrawDesktop(const State& state,int w,int h,float scale) {
     SubmitPanel((float)w,(float)h,1*scale,30*scale);
-    const float pad=22*scale, cardW=w-2*pad, cardH=220*scale;
-    SubmitInsetGlass(pad,116*scale,cardW,cardH,scale);
-    SubmitInsetGlass(pad,356*scale,cardW,cardH,scale);
+    const float pad=22*scale, cardW=w-2*pad, claudeCardH=220*scale;
+    const bool hasReserve=state.codex.limits.size()>2;
+    const float codexY=(hasReserve?348.f:356.f)*scale;
+    const float codexCardH=(hasReserve?282.f:220.f)*scale;
+    SubmitInsetGlass(pad,116*scale,cardW,claudeCardH,scale);
+    SubmitInsetGlass(pad,codexY,cardW,codexCardH,scale);
     auto* d=ImGui::GetBackgroundDrawList(); float text=scale*g_text_scale;
     AddText(d,g_semibold,11*text,ImVec2(28*scale,22*scale),C(206,213,232),"PLAN USAGE");
     AddText(d,g_semibold,30*text,ImVec2(28*scale,43*scale),C(255,255,255),"Claude + ChatGPT");
     AddText(d,g_regular,13*text,ImVec2(28*scale,84*scale),C(205,215,230),"Live limits and reset times");
     ProviderCard(d,state.claude,pad,116*scale,cardW,scale,C(255,185,104));
-    ProviderCard(d,state.codex,pad,356*scale,cardW,scale,C(120,181,255));
+    ProviderCard(d,state.codex,pad,codexY,cardW,scale,C(120,181,255));
     AddText(d,g_regular,12*text,ImVec2(28*scale,h-43*scale),C(194,207,223),"Updates automatically");
     AddText(d,g_semibold,11*text,ImVec2(w-116*scale,h-43*scale),C(215,225,240),"LIMITBAR");
 }

@@ -93,6 +93,31 @@ def parse_codex_usage(response: dict) -> UsageSnapshot:
                 duration_minutes=duration,
             )
         )
+
+    # ChatGPT/Codex can expose an additional plan bucket alongside the normal
+    # 5-hour and weekly windows.  In the current app-server response this is
+    # `base_model_inference` with limitName `gpt-reserve`.
+    if isinstance(buckets, dict):
+        for limit_id, reserve in buckets.items():
+            if not isinstance(reserve, dict) or limit_id == "codex":
+                continue
+            name = str(reserve.get("limitName") or reserve.get("limit_name") or "").strip().lower()
+            if limit_id != "base_model_inference" and name != "gpt-reserve":
+                continue
+            item = reserve.get("primary")
+            if not isinstance(item, dict):
+                continue
+            duration = _integer(item.get("windowDurationMins") or item.get("window_duration_mins")) or 10_080
+            windows.append(
+                LimitWindow(
+                    id="gpt_reserve",
+                    label="GPT reserve",
+                    used_percent=_number(item.get("usedPercent") if "usedPercent" in item else item.get("used_percent")),
+                    resets_at=_time(item.get("resetsAt") or item.get("resets_at")),
+                    duration_minutes=duration,
+                )
+            )
+            break
     if not windows:
         raise ProviderError("Codex did not report a current usage window", retryable=False)
     return UsageSnapshot(
