@@ -6,6 +6,7 @@
   "start_with_windows": false,
   "interface_scale": 1.0,
   "text_scale": 1.0,
+  "language": "auto",
   "allow_screenshots": false,
   "providers": {
     "claude": true,

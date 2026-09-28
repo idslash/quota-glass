@@ -13,6 +13,7 @@ from PIL import Image, ImageDraw, ImageFont
 import pystray
 
 from limitbar.config import Settings, app_data_dir
+from limitbar.localization import effective_language, tr
 from limitbar.models import UsageSnapshot
 from limitbar.notifications import NotificationEngine
 from limitbar.windows import set_start_with_windows
@@ -59,6 +60,7 @@ class NativeLimitBarUI:
             return
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         options = [f"--scale={self.settings.interface_scale}", f"--text-scale={self.settings.text_scale}"]
+        options.append(f"--language={effective_language(self.settings.language)}")
         if "--taskbar" in arguments and self.settings.taskbar_mode == "compact":
             options.append("--compact")
         if self.settings.allow_screenshots:
@@ -72,10 +74,13 @@ class NativeLimitBarUI:
             self._launch("--taskbar")
 
     def _create_tray(self) -> pystray.Icon:
-        def choose(key: str, value: float):
+        def choose(key: str, value: object):
             def action(_icon, _item) -> None:
                 self.events.put((key, value))
             return action
+
+        def text(key: str):
+            return lambda _item: tr(key, self.settings.language)
 
         def interface_checked(value: float):
             return lambda _item: self.settings.interface_scale == value
@@ -86,7 +91,7 @@ class NativeLimitBarUI:
         interface_menu = pystray.Menu(
             *(
                 pystray.MenuItem(
-                    label,
+                    text(label),
                     choose("_interface_scale", value),
                     checked=interface_checked(value),
                     radio=True,
@@ -97,60 +102,66 @@ class NativeLimitBarUI:
         text_menu = pystray.Menu(
             *(
                 pystray.MenuItem(
-                    label,
+                    text(label),
                     choose("_text_scale", value),
                     checked=text_checked(value),
                     radio=True,
                 )
-                for label, value in (("Normal", 1.0), ("Large", 1.15), ("Extra large", 1.3))
+                for label, value in (("normal", 1.0), ("large", 1.15), ("extra_large", 1.3))
             )
         )
         notifications_menu = pystray.Menu(
-            pystray.MenuItem("Enabled", lambda _i, _m: self.events.put(("_notify_enabled", not self.settings.notifications_enabled)), checked=lambda _m: self.settings.notifications_enabled),
-            pystray.MenuItem("Reset soon", lambda _i, _m: self.events.put(("_notify_reset", not self.settings.notify_reset_soon)), checked=lambda _m: self.settings.notify_reset_soon),
-            pystray.MenuItem("Fast usage", lambda _i, _m: self.events.put(("_notify_fast", not self.settings.notify_fast_usage)), checked=lambda _m: self.settings.notify_fast_usage),
-            pystray.MenuItem("Reset completed", lambda _i, _m: self.events.put(("_notify_complete", not self.settings.notify_reset_complete)), checked=lambda _m: self.settings.notify_reset_complete),
-            pystray.MenuItem("Quiet hours 23:00-08:00", lambda _i, _m: self.events.put(("_quiet_hours", not self.settings.quiet_hours)), checked=lambda _m: self.settings.quiet_hours),
+            pystray.MenuItem(text("enabled"), lambda _i, _m: self.events.put(("_notify_enabled", not self.settings.notifications_enabled)), checked=lambda _m: self.settings.notifications_enabled),
+            pystray.MenuItem(text("reset_soon"), lambda _i, _m: self.events.put(("_notify_reset", not self.settings.notify_reset_soon)), checked=lambda _m: self.settings.notify_reset_soon),
+            pystray.MenuItem(text("fast_usage"), lambda _i, _m: self.events.put(("_notify_fast", not self.settings.notify_fast_usage)), checked=lambda _m: self.settings.notify_fast_usage),
+            pystray.MenuItem(text("reset_completed"), lambda _i, _m: self.events.put(("_notify_complete", not self.settings.notify_reset_complete)), checked=lambda _m: self.settings.notify_reset_complete),
+            pystray.MenuItem(text("quiet_hours"), lambda _i, _m: self.events.put(("_quiet_hours", not self.settings.quiet_hours)), checked=lambda _m: self.settings.quiet_hours),
         )
         taskbar_layout_menu = pystray.Menu(
             pystray.MenuItem(
-                "Standard",
+                text("standard"),
                 lambda _i, _m: self.events.put(("_taskbar_mode", "standard")),
                 checked=lambda _m: self.settings.taskbar_mode == "standard",
                 radio=True,
             ),
             pystray.MenuItem(
-                "Compact",
+                text("compact"),
                 lambda _i, _m: self.events.put(("_taskbar_mode", "compact")),
                 checked=lambda _m: self.settings.taskbar_mode == "compact",
                 radio=True,
             ),
         )
+        language_menu = pystray.Menu(
+            pystray.MenuItem(text("auto"), choose("_language", "auto"), checked=lambda _m: self.settings.language == "auto", radio=True),
+            pystray.MenuItem("Русский", choose("_language", "ru"), checked=lambda _m: self.settings.language == "ru", radio=True),
+            pystray.MenuItem("English", choose("_language", "en"), checked=lambda _m: self.settings.language == "en", radio=True),
+        )
         menu = pystray.Menu(
-            pystray.MenuItem("Show desktop widget", lambda _i, _m: self.events.put(("_desktop", True)), default=True),
-            pystray.MenuItem("Refresh", lambda _i, _m: self.events.put(("_refresh", True))),
+            pystray.MenuItem(text("desktop"), lambda _i, _m: self.events.put(("_desktop", True)), default=True),
+            pystray.MenuItem(text("refresh"), lambda _i, _m: self.events.put(("_refresh", True))),
             pystray.MenuItem(
-                "Show taskbar island",
+                text("taskbar"),
                 lambda _i, _m: self.events.put(("_taskbar", not self.settings.show_widget)),
                 checked=lambda _m: self.settings.show_widget,
             ),
-            pystray.MenuItem("Taskbar layout", taskbar_layout_menu),
-            pystray.MenuItem("Interface size", interface_menu),
-            pystray.MenuItem("Text size", text_menu),
-            pystray.MenuItem("Notifications", notifications_menu),
+            pystray.MenuItem(text("taskbar_layout"), taskbar_layout_menu),
+            pystray.MenuItem(text("interface_size"), interface_menu),
+            pystray.MenuItem(text("text_size"), text_menu),
+            pystray.MenuItem(text("notifications"), notifications_menu),
+            pystray.MenuItem(text("language"), language_menu),
             pystray.MenuItem(
-                "Allow screenshots",
+                text("allow_screenshots"),
                 lambda _i, _m: self.events.put(("_screenshots", not self.settings.allow_screenshots)),
                 checked=lambda _m: self.settings.allow_screenshots,
             ),
             pystray.MenuItem(
-                "Start with Windows",
+                text("start_windows"),
                 lambda _i, _m: self.events.put(("_startup", not self.settings.start_with_windows)),
                 checked=lambda _m: self.settings.start_with_windows,
             ),
-            pystray.MenuItem("Open logs", lambda _i, _m: webbrowser.open((app_data_dir() / "limitbar.log").as_uri())),
+            pystray.MenuItem(text("open_logs"), lambda _i, _m: webbrowser.open((app_data_dir() / "limitbar.log").as_uri())),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem("Exit", lambda _i, _m: self.events.put(("_exit", True))),
+            pystray.MenuItem(text("exit"), lambda _i, _m: self.events.put(("_exit", True))),
         )
         return pystray.Icon("LimitBar", _tray_image(None), "LimitBar — connecting", menu)
 
@@ -189,6 +200,11 @@ class NativeLimitBarUI:
                     self._tray.update_menu()
                 elif key == "_taskbar_mode":
                     self.settings.taskbar_mode = str(value)
+                    self.settings.save()
+                    self._restart_frontends()
+                    self._tray.update_menu()
+                elif key == "_language":
+                    self.settings.language = str(value)
                     self.settings.save()
                     self._restart_frontends()
                     self._tray.update_menu()

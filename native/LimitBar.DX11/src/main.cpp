@@ -33,6 +33,7 @@ static Glass::Backdrop g_backdrop;
 static Glass::Renderer g_glass;
 static bool g_taskbar = false;
 static bool g_taskbar_compact = false;
+static bool g_language_ru = false;
 static bool g_desktop_parented = false;
 static HWND g_desktop_host = nullptr;
 static constexpr int kTaskbarWidth = 520;
@@ -500,7 +501,7 @@ static void DrawTaskbar(const State& state,int w,int h,float scale) {
 
 int main(int argc,char** argv) {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-    for(int i=1;i<argc;++i){std::string arg=argv[i];if(arg=="--taskbar")g_taskbar=true;else if(arg=="--compact")g_taskbar_compact=true;else if(arg=="--allow-capture")g_allow_capture=true;else if(arg.rfind("--scale=",0)==0)g_interface_scale=std::clamp(std::stof(arg.substr(8)),1.f,1.5f);else if(arg.rfind("--text-scale=",0)==0)g_text_scale=std::clamp(std::stof(arg.substr(13)),1.f,1.3f);}
+    for(int i=1;i<argc;++i){std::string arg=argv[i];if(arg=="--taskbar")g_taskbar=true;else if(arg=="--compact")g_taskbar_compact=true;else if(arg=="--allow-capture")g_allow_capture=true;else if(arg=="--language=ru")g_language_ru=true;else if(arg.rfind("--scale=",0)==0)g_interface_scale=std::clamp(std::stof(arg.substr(8)),1.f,1.5f);else if(arg.rfind("--text-scale=",0)==0)g_text_scale=std::clamp(std::stof(arg.substr(13)),1.f,1.3f);}
     if(g_taskbar)LoadTaskbarPrefs();
     const wchar_t* cls=g_taskbar?L"LimitBarGlassTaskbar":L"LimitBarGlassDesktop";
     HANDLE mutex=CreateMutexW(nullptr,TRUE,g_taskbar?L"Local\\LimitBarGlassTaskbar":L"Local\\LimitBarGlassDesktop");
@@ -661,22 +662,22 @@ static void ShowTaskbarMenu(POINT screen) {
     POINT client=screen;ScreenToClient(g_hwnd,&client);RECT rect{};GetClientRect(g_hwnd,&rect);
     int contextProvider=g_taskbar_compact?(client.y<(rect.bottom-rect.top)/2?0:1):(client.x<(rect.right-rect.left)/2?0:1);
     HMENU root=CreatePopupMenu(),modes=CreatePopupMenu(),scope=CreatePopupMenu(),shown=CreatePopupMenu();
-    AppendMenuW(modes,MF_STRING,ModeSmart,L"Smart — show attention only");
-    AppendMenuW(modes,MF_STRING,ModeCarousel,L"Carousel — rotate selected");
-    AppendMenuW(modes,MF_STRING,ModeFixed,L"Fixed — current page");
+    AppendMenuW(modes,MF_STRING,ModeSmart,g_language_ru?L"Умный — только важное":L"Smart — show attention only");
+    AppendMenuW(modes,MF_STRING,ModeCarousel,g_language_ru?L"Карусель — по очереди":L"Carousel — rotate selected");
+    AppendMenuW(modes,MF_STRING,ModeFixed,g_language_ru?L"Фиксированный — текущий":L"Fixed — current page");
     CheckMenuRadioItem(modes,ModeSmart,ModeFixed,ModeSmart+(int)g_task_prefs.mode,MF_BYCOMMAND);
-    AppendMenuW(scope,MF_STRING,ScopeTogether,L"Whole island");
-    AppendMenuW(scope,MF_STRING,ScopeSeparate,L"Each provider separately");
+    AppendMenuW(scope,MF_STRING,ScopeTogether,g_language_ru?L"Вся панель":L"Whole island");
+    AppendMenuW(scope,MF_STRING,ScopeSeparate,g_language_ru?L"Каждый сервис отдельно":L"Each provider separately");
     CheckMenuRadioItem(scope,ScopeTogether,ScopeSeparate,ScopeTogether+(int)g_task_prefs.scope,MF_BYCOMMAND);
-    AppendMenuW(shown,MF_STRING|(g_task_prefs.show_five?MF_CHECKED:0),ShowFive,L"5-hour");
-    AppendMenuW(shown,MF_STRING|(g_task_prefs.show_weekly?MF_CHECKED:0),ShowWeekly,L"Weekly");
+    AppendMenuW(shown,MF_STRING|(g_task_prefs.show_five?MF_CHECKED:0),ShowFive,g_language_ru?L"5-часовой":L"5-hour");
+    AppendMenuW(shown,MF_STRING|(g_task_prefs.show_weekly?MF_CHECKED:0),ShowWeekly,g_language_ru?L"Недельный":L"Weekly");
     AppendMenuW(shown,MF_STRING|(g_task_prefs.show_reserve?MF_CHECKED:0),ShowReserve,L"GPT reserve");
-    AppendMenuW(root,MF_POPUP,(UINT_PTR)modes,L"Mode");
-    AppendMenuW(root,MF_POPUP,(UINT_PTR)scope,L"Sliding");
-    AppendMenuW(root,MF_POPUP,(UINT_PTR)shown,L"Show");
+    AppendMenuW(root,MF_POPUP,(UINT_PTR)modes,g_language_ru?L"Режим":L"Mode");
+    AppendMenuW(root,MF_POPUP,(UINT_PTR)scope,g_language_ru?L"Листание":L"Sliding");
+    AppendMenuW(root,MF_POPUP,(UINT_PTR)shown,g_language_ru?L"Показывать":L"Show");
     AppendMenuW(root,MF_SEPARATOR,0,nullptr);
-    AppendMenuW(root,MF_STRING,PinCurrent,g_task_prefs.scope==TaskScope::PerProvider?(contextProvider==0?L"Pin Claude page":L"Pin ChatGPT page"):L"Pin current page");
-    AppendMenuW(root,MF_STRING,OpenDetails,L"Open details");
+    AppendMenuW(root,MF_STRING,PinCurrent,g_language_ru?(g_task_prefs.scope==TaskScope::PerProvider?(contextProvider==0?L"Закрепить Claude":L"Закрепить ChatGPT"):L"Закрепить текущую страницу"):(g_task_prefs.scope==TaskScope::PerProvider?(contextProvider==0?L"Pin Claude page":L"Pin ChatGPT page"):L"Pin current page"));
+    AppendMenuW(root,MF_STRING,OpenDetails,g_language_ru?L"Подробнее":L"Open details");
     SetForegroundWindow(g_hwnd);
     int command=TrackPopupMenu(root,TPM_RETURNCMD|TPM_RIGHTBUTTON,screen.x,screen.y,0,g_hwnd,nullptr);
     if(command==ModeSmart)g_task_prefs.mode=TaskMode::Smart;

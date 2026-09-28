@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from statistics import median
 
 from limitbar.config import Settings
+from limitbar.localization import effective_language, tr
 from limitbar.models import Health, LimitWindow, UsageSnapshot
 
 
@@ -36,7 +37,7 @@ class NotificationEngine:
             self._failures[snapshot.provider_id] = self._failures.get(snapshot.provider_id, 0) + 1
             if self.settings.notify_auth_errors and self._failures[snapshot.provider_id] >= 2:
                 key = f"stale:{snapshot.provider_id}:{snapshot.message}"
-                notices.append(Notice(f"LimitBar · {snapshot.provider_name}", snapshot.message or "Данные давно не обновлялись", key))
+                notices.append(Notice(f"LimitBar · {snapshot.provider_name}", snapshot.message or tr("stale", self.settings.language), key))
         else:
             self._failures[snapshot.provider_id] = 0
             for window in snapshot.windows:
@@ -55,7 +56,8 @@ class NotificationEngine:
         remaining = round(100 - window.used_percent)
         reset = window.resets_at.astimezone(timezone.utc) if window.resets_at else None
         reset_key = reset.isoformat(timespec="minutes") if reset else "unknown"
-        label = "5-часовой лимит" if window.duration_minutes == 300 else "недельный лимит"
+        language = effective_language(self.settings.language)
+        label = _window_label(window, language)
         notices: list[Notice] = []
 
         if reset:
@@ -68,7 +70,7 @@ class NotificationEngine:
                 notices.append(
                     Notice(
                         f"LimitBar · {snapshot.provider_name}",
-                        f"Reset через {_duration(minutes * 60)} · осталось {remaining}% {label}",
+                        tr("soon", language, duration=_duration(minutes * 60, language), remaining=remaining, label=label),
                         f"soon:{snapshot.provider_id}:{window.id}:{reset_key}",
                     )
                 )
@@ -80,7 +82,7 @@ class NotificationEngine:
                     notices.append(
                         Notice(
                             f"LimitBar · {snapshot.provider_name}",
-                            f"Недельный расход выше темпа: использовано {round(window.used_percent)}%, до reset {_duration((reset-now).total_seconds())}",
+                            tr("pace", language, used=round(window.used_percent), duration=_duration((reset-now).total_seconds(), language)),
                             f"pace:{snapshot.provider_id}:{window.id}:{reset_key}",
                         )
                     )
@@ -93,7 +95,7 @@ class NotificationEngine:
                 notices.append(
                     Notice(
                         f"LimitBar · {snapshot.provider_name}",
-                        f"{label.capitalize()} восстановлен · доступно {remaining}%",
+                        tr("complete", language, label=label[:1].upper()+label[1:], remaining=remaining),
                         f"complete:{snapshot.provider_id}:{window.id}:{snapshot.fetched_at.isoformat(timespec='minutes')}",
                     )
                 )
@@ -106,7 +108,7 @@ class NotificationEngine:
                     notices.append(
                         Notice(
                             f"LimitBar · {snapshot.provider_name}",
-                            f"При текущем темпе {label} закончится примерно через {_duration(projected_hours*3600)}",
+                            tr("burn", language, label=label, duration=_duration(projected_hours*3600, language)),
                             f"burn:{snapshot.provider_id}:{window.id}:{reset_key}",
                         )
                     )
@@ -145,13 +147,19 @@ def _robust_burn_rate(samples: list[tuple[datetime, float]]) -> float | None:
     return float(median(slopes))
 
 
-def _duration(seconds: float) -> str:
+def _window_label(window: LimitWindow, language: str) -> str:
+    if window.id == "gpt_reserve":
+        return tr("reserve", language)
+    return tr("five_hour" if window.duration_minutes == 300 else "weekly", language)
+
+
+def _duration(seconds: float, language: str = "ru") -> str:
     seconds = max(0, int(seconds))
     if seconds < 3600:
-        return f"{max(1, seconds // 60)} мин"
+        return f"{max(1, seconds // 60)} {tr('minute', language)}"
     if seconds < 86400:
-        return f"{seconds // 3600} ч {(seconds % 3600) // 60} мин"
-    return f"{seconds // 86400} д {(seconds % 86400) // 3600} ч"
+        return f"{seconds // 3600} {tr('hour', language)} {(seconds % 3600) // 60} {tr('minute', language)}"
+    return f"{seconds // 86400} {tr('day', language)} {(seconds % 86400) // 3600} {tr('hour', language)}"
 
 
 def _in_quiet_hours(local_now: datetime) -> bool:

@@ -66,9 +66,10 @@ def test_poller_refreshes_immediately_around_reset():
 
 def test_taskbar_layout_setting_round_trips(tmp_path, monkeypatch):
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
-    settings = Settings(taskbar_mode="compact")
+    settings = Settings(taskbar_mode="compact", language="en")
     settings.save()
     assert Settings.load().taskbar_mode == "compact"
+    assert Settings.load().language == "en"
 
 
 def test_format_reset_is_compact():
@@ -88,7 +89,7 @@ def test_log_filter_redacts_bearer_and_api_key():
 
 def test_notifications_reset_soon_are_actionable_and_deduplicated():
     now = datetime(2026, 9, 27, 12, 0, tzinfo=timezone.utc)
-    settings = Settings(quiet_hours=False)
+    settings = Settings(quiet_hours=False, language="ru")
     engine = NotificationEngine(settings)
     current = UsageSnapshot(
         "claude",
@@ -104,7 +105,7 @@ def test_notifications_reset_soon_are_actionable_and_deduplicated():
 
 def test_notifications_detect_reset_completion():
     now = datetime(2026, 9, 27, 12, 0, tzinfo=timezone.utc)
-    settings = Settings(quiet_hours=False, notify_reset_soon=False, notify_fast_usage=False)
+    settings = Settings(quiet_hours=False, notify_reset_soon=False, notify_fast_usage=False, language="ru")
     engine = NotificationEngine(settings)
     before = UsageSnapshot("codex", "ChatGPT", (LimitWindow("five_hour", "5h", 82, now + timedelta(minutes=2), 300),), fetched_at=now)
     after = UsageSnapshot("codex", "ChatGPT", (LimitWindow("five_hour", "5h", 3, now + timedelta(hours=5), 300),), fetched_at=now + timedelta(minutes=3))
@@ -112,6 +113,22 @@ def test_notifications_detect_reset_completion():
     notices = engine.evaluate(after, now + timedelta(minutes=3))
     assert len(notices) == 1
     assert "восстановлен" in notices[0].message
+
+
+def test_notifications_support_english_and_reserve_label():
+    now = datetime(2026, 9, 27, 12, 0, tzinfo=timezone.utc)
+    settings = Settings(quiet_hours=False, language="en")
+    engine = NotificationEngine(settings)
+    current = UsageSnapshot(
+        "codex",
+        "ChatGPT",
+        (LimitWindow("gpt_reserve", "GPT reserve", 55, now + timedelta(minutes=20), 10_080),),
+        fetched_at=now,
+    )
+    notices = engine.evaluate(current, now)
+    assert len(notices) == 1
+    assert "Resets in 20 min" in notices[0].message
+    assert "GPT reserve" in notices[0].message
 
 
 def test_burn_rate_uses_recent_median_slopes():
