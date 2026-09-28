@@ -55,24 +55,35 @@ static const auto g_started_at = std::chrono::steady_clock::now();
 static bool g_taskbar_swiping = false;
 static POINT g_taskbar_swipe_start{};
 static float g_taskbar_swipe_x = 0;
+static int g_taskbar_swipe_provider = -1;
 static int g_visual_page = -1;
 static int g_previous_page = -1;
 static int g_manual_page = -1;
 static int g_transition_direction = 1;
 static auto g_page_transition_at = std::chrono::steady_clock::now();
 static auto g_manual_until = std::chrono::steady_clock::time_point::min();
+static int g_provider_visual[2] = {-1,-1};
+static int g_provider_previous[2] = {-1,-1};
+static int g_provider_manual[2] = {-1,-1};
+static int g_provider_direction[2] = {1,1};
+static std::chrono::steady_clock::time_point g_provider_transition[2] = {g_started_at,g_started_at};
+static std::chrono::steady_clock::time_point g_provider_manual_until[2] = {std::chrono::steady_clock::time_point::min(),std::chrono::steady_clock::time_point::min()};
 
 struct Limit { std::string id; double used = -1; std::string reset; };
 struct Provider { std::string name; std::vector<Limit> limits; };
 struct State { Provider claude{"Claude"}; Provider codex{"ChatGPT"}; };
 enum class TaskPage { FiveHour=0, Weekly=1, Reserve=2 };
 enum class TaskMode { Smart=0, Carousel=1, Fixed=2 };
+enum class TaskScope { Together=0, PerProvider=1 };
 struct TaskPrefs {
     TaskMode mode=TaskMode::Smart;
+    TaskScope scope=TaskScope::Together;
     bool show_five=true;
     bool show_weekly=true;
     bool show_reserve=true;
     TaskPage fixed_page=TaskPage::FiveHour;
+    TaskPage fixed_claude=TaskPage::FiveHour;
+    TaskPage fixed_codex=TaskPage::FiveHour;
 };
 static TaskPrefs g_task_prefs;
 static State g_taskbar_state;
@@ -117,18 +128,24 @@ static int JsonInt(const std::string& json,const char* key,int fallback) {
 static void LoadTaskbarPrefs() {
     const std::string json=ReadAll(TaskbarPrefsPath()); if(json.empty())return;
     g_task_prefs.mode=(TaskMode)std::clamp(JsonInt(json,"mode",0),0,2);
+    g_task_prefs.scope=(TaskScope)std::clamp(JsonInt(json,"scope",0),0,1);
     g_task_prefs.show_five=JsonBool(json,"show_five",true);
     g_task_prefs.show_weekly=JsonBool(json,"show_weekly",true);
     g_task_prefs.show_reserve=JsonBool(json,"show_reserve",true);
     g_task_prefs.fixed_page=(TaskPage)std::clamp(JsonInt(json,"fixed_page",0),0,2);
+    g_task_prefs.fixed_claude=(TaskPage)std::clamp(JsonInt(json,"fixed_claude",0),0,2);
+    g_task_prefs.fixed_codex=(TaskPage)std::clamp(JsonInt(json,"fixed_codex",0),0,2);
 }
 static void SaveTaskbarPrefs() {
     std::ofstream file(TaskbarPrefsPath(),std::ios::binary|std::ios::trunc); if(!file)return;
     file << "{\n  \"mode\": " << (int)g_task_prefs.mode
+         << ",\n  \"scope\": " << (int)g_task_prefs.scope
          << ",\n  \"show_five\": " << (g_task_prefs.show_five?"true":"false")
          << ",\n  \"show_weekly\": " << (g_task_prefs.show_weekly?"true":"false")
          << ",\n  \"show_reserve\": " << (g_task_prefs.show_reserve?"true":"false")
-         << ",\n  \"fixed_page\": " << (int)g_task_prefs.fixed_page << "\n}\n";
+         << ",\n  \"fixed_page\": " << (int)g_task_prefs.fixed_page
+         << ",\n  \"fixed_claude\": " << (int)g_task_prefs.fixed_claude
+         << ",\n  \"fixed_codex\": " << (int)g_task_prefs.fixed_codex << "\n}\n";
 }
 static std::string Section(const std::string& json, const char* key) {
     std::string needle = std::string("\"") + key + "\":{";
@@ -190,6 +207,32 @@ static TaskPage StepPage(const State& state,TaskPage current,int direction) {
     auto pages=AvailablePages(state); auto found=std::find(pages.begin(),pages.end(),current);
     int index=found==pages.end()?0:(int)std::distance(pages.begin(),found);
     index=(index+direction+(int)pages.size())%(int)pages.size(); return pages[index];
+}
+static std::vector<TaskPage> ProviderPages(const Provider& provider) {
+    std::vector<TaskPage> result;
+    for(TaskPage page:{TaskPage::FiveHour,TaskPage::Weekly,TaskPage::Reserve})
+        if(PageEnabled(page)&&LimitForPage(provider,page))result.push_back(page);
+    if(result.empty())result.push_back(TaskPage::FiveHour);
+    return result;
+}
+static TaskPage StepProviderPage(const Provider& provider,TaskPage current,int direction) {
+    auto pages=ProviderPages(provider); auto found=std::find(pages.begin(),pages.end(),current);
+    int index=found==pages.end()?0:(int)std::distance(pages.begin(),found);
+    index=(index+direction+(int)pages.size())%(int)pages.size(); return pages[index];
+}
+static TaskPage TargetProviderPage(const Provider& provider,int providerIndex) {
+    auto pages=ProviderPages(provider); auto now=std::chrono::steady_clock::now();
+    if(g_provider_manual[providerIndex]>=0&&now<g_provider_manual_until[providerIndex])return (TaskPage)g_provider_manual[providerIndex];
+    if(g_task_prefs.mode==TaskMode::Fixed) {
+        TaskPage fixed=providerIndex==0?g_task_prefs.fixed_claude:g_task_prefs.fixed_codex;
+        return std::find(pages.begin(),pages.end(),fixed)!=pages.end()?fixed:pages.front();
+    }
+    double elapsed=std::chrono::duration<double>(now-g_started_at).count();
+    if(g_task_prefs.mode==TaskMode::Carousel)return pages[(size_t)((elapsed+providerIndex*6.0)/12.0)%pages.size()];
+    TaskPage base=std::find(pages.begin(),pages.end(),TaskPage::FiveHour)!=pages.end()?TaskPage::FiveHour:pages.front();
+    TaskPage attention=base; double highest=64.999;
+    for(TaskPage page:pages)if(page!=base)if(const Limit* limit=LimitForPage(provider,page);limit&&limit->used>highest){highest=limit->used;attention=page;}
+    double phase=std::fmod(elapsed,90.0);return attention!=base&&phase>=70.0&&phase<80.0?attention:base;
 }
 static TaskPage TargetTaskPage(const State& state) {
     auto pages=AvailablePages(state); auto now=std::chrono::steady_clock::now();
@@ -367,6 +410,41 @@ static void TaskProviderContent(ImDrawList* d,const Provider& p,const Limit* l,f
 static void TaskProvider(ImDrawList* d,const Provider& p,const Limit* limit,float x,float y,float width,float scale,ImU32 accent,bool compact=false) {
     if(limit)TaskProviderContent(d,p,limit,x,y,width,scale,accent,compact);
 }
+static void DrawProviderSlider(ImDrawList* d,const Provider& provider,int providerIndex,float x,float y,float width,float scale,ImU32 accent,bool compact) {
+    TaskPage target=TargetProviderPage(provider,providerIndex);auto now=std::chrono::steady_clock::now();
+    if(g_provider_visual[providerIndex]<0)g_provider_visual[providerIndex]=(int)target;
+    if((int)target!=g_provider_visual[providerIndex]) {
+        g_provider_previous[providerIndex]=g_provider_visual[providerIndex];g_provider_visual[providerIndex]=(int)target;g_provider_transition[providerIndex]=now;
+    }
+    d->PushClipRect(ImVec2(x-2*scale,y-4*scale),ImVec2(x+width+2*scale,y+(compact?18:40)*scale),true);
+    if(g_taskbar_swiping&&g_taskbar_swipe_provider==providerIndex&&std::abs(g_taskbar_swipe_x)>1) {
+        int direction=g_taskbar_swipe_x<0?1:-1;TaskPage adjacent=StepProviderPage(provider,(TaskPage)g_provider_visual[providerIndex],direction);
+        TaskProvider(d,provider,LimitForPage(provider,(TaskPage)g_provider_visual[providerIndex]),x+g_taskbar_swipe_x,y,width,scale,accent,compact);
+        TaskProvider(d,provider,LimitForPage(provider,adjacent),x+g_taskbar_swipe_x+direction*width,y,width,scale,accent,compact);
+    } else {
+        float elapsed=(float)std::chrono::duration<double>(now-g_provider_transition[providerIndex]).count();
+        if(g_provider_previous[providerIndex]>=0&&elapsed<.65f) {
+            float t=std::clamp(elapsed/.65f,0.f,1.f);t=t*t*(3.f-2.f*t);int direction=g_provider_direction[providerIndex];
+            TaskProvider(d,provider,LimitForPage(provider,(TaskPage)g_provider_previous[providerIndex]),x-direction*width*t,y,width,scale,accent,compact);
+            TaskProvider(d,provider,LimitForPage(provider,(TaskPage)g_provider_visual[providerIndex]),x+direction*width*(1-t),y,width,scale,accent,compact);
+        } else {
+            g_provider_previous[providerIndex]=-1;g_provider_direction[providerIndex]=1;
+            TaskProvider(d,provider,LimitForPage(provider,(TaskPage)g_provider_visual[providerIndex]),x,y,width,scale,accent,compact);
+        }
+    }
+    d->PopClipRect();
+}
+static void DrawTaskbarSeparate(ImDrawList* d,const State& state,int w,int h,float scale) {
+    if(g_taskbar_compact) {
+        float pad=12*scale,rowWidth=w-2*pad,y=(h-35*scale)*.5f;
+        DrawProviderSlider(d,state.claude,0,pad,y,rowWidth,scale,C(255,181,101),true);
+        DrawProviderSlider(d,state.codex,1,pad,y+19*scale,rowWidth,scale,C(130,181,255),true);
+    } else {
+        float pad=15*scale,gap=34*scale,col=(w-2*pad-gap)/2,y=(h-38*scale)*.5f;
+        DrawProviderSlider(d,state.claude,0,pad,y,col,scale,C(255,181,101),false);
+        DrawProviderSlider(d,state.codex,1,pad+col+gap,y,col,scale,C(130,181,255),false);
+    }
+}
 static void DrawTaskbarPage(ImDrawList* d,const State& state,TaskPage page,int w,int h,float scale,float offset) {
     const Limit* claude=LimitForPage(state.claude,page); const Limit* codex=LimitForPage(state.codex,page);
     if(g_taskbar_compact) {
@@ -396,6 +474,7 @@ static void DrawTaskbar(const State& state,int w,int h,float scale) {
     auto* d=ImGui::GetBackgroundDrawList();
     d->AddRectFilled(ImVec2(1,1),ImVec2(w-1.f,h-1.f),C(15,19,27,168),14*scale);
     d->AddRectFilled(ImVec2(14*scale,2*scale),ImVec2(w-14*scale,3*scale),C(255,255,255,11),1*scale);
+    if(g_task_prefs.scope==TaskScope::PerProvider){DrawTaskbarSeparate(d,state,w,h,scale);return;}
     TaskPage target=TargetTaskPage(state); auto now=std::chrono::steady_clock::now();
     if(g_visual_page<0)g_visual_page=(int)target;
     if((int)target!=g_visual_page) {
@@ -578,32 +657,50 @@ static void OpenDesktopWidget() {
     if(desktop){ShowWindow(desktop,SW_SHOWNA);SetWindowPos(desktop,HWND_BOTTOM,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_SHOWWINDOW|SWP_NOACTIVATE);}
 }
 static void ShowTaskbarMenu(POINT screen) {
-    enum { ModeSmart=1001,ModeCarousel,ModeFixed,ShowFive=1101,ShowWeekly,ShowReserve,PinCurrent=1201,OpenDetails };
-    HMENU root=CreatePopupMenu(),modes=CreatePopupMenu(),shown=CreatePopupMenu();
+    enum { ModeSmart=1001,ModeCarousel,ModeFixed,ScopeTogether=1051,ScopeSeparate,ShowFive=1101,ShowWeekly,ShowReserve,PinCurrent=1201,OpenDetails };
+    POINT client=screen;ScreenToClient(g_hwnd,&client);RECT rect{};GetClientRect(g_hwnd,&rect);
+    int contextProvider=g_taskbar_compact?(client.y<(rect.bottom-rect.top)/2?0:1):(client.x<(rect.right-rect.left)/2?0:1);
+    HMENU root=CreatePopupMenu(),modes=CreatePopupMenu(),scope=CreatePopupMenu(),shown=CreatePopupMenu();
     AppendMenuW(modes,MF_STRING,ModeSmart,L"Smart — show attention only");
     AppendMenuW(modes,MF_STRING,ModeCarousel,L"Carousel — rotate selected");
     AppendMenuW(modes,MF_STRING,ModeFixed,L"Fixed — current page");
     CheckMenuRadioItem(modes,ModeSmart,ModeFixed,ModeSmart+(int)g_task_prefs.mode,MF_BYCOMMAND);
+    AppendMenuW(scope,MF_STRING,ScopeTogether,L"Whole island");
+    AppendMenuW(scope,MF_STRING,ScopeSeparate,L"Each provider separately");
+    CheckMenuRadioItem(scope,ScopeTogether,ScopeSeparate,ScopeTogether+(int)g_task_prefs.scope,MF_BYCOMMAND);
     AppendMenuW(shown,MF_STRING|(g_task_prefs.show_five?MF_CHECKED:0),ShowFive,L"5-hour");
     AppendMenuW(shown,MF_STRING|(g_task_prefs.show_weekly?MF_CHECKED:0),ShowWeekly,L"Weekly");
     AppendMenuW(shown,MF_STRING|(g_task_prefs.show_reserve?MF_CHECKED:0),ShowReserve,L"GPT reserve");
     AppendMenuW(root,MF_POPUP,(UINT_PTR)modes,L"Mode");
+    AppendMenuW(root,MF_POPUP,(UINT_PTR)scope,L"Sliding");
     AppendMenuW(root,MF_POPUP,(UINT_PTR)shown,L"Show");
     AppendMenuW(root,MF_SEPARATOR,0,nullptr);
-    AppendMenuW(root,MF_STRING,PinCurrent,L"Pin current page");
+    AppendMenuW(root,MF_STRING,PinCurrent,g_task_prefs.scope==TaskScope::PerProvider?(contextProvider==0?L"Pin Claude page":L"Pin ChatGPT page"):L"Pin current page");
     AppendMenuW(root,MF_STRING,OpenDetails,L"Open details");
     SetForegroundWindow(g_hwnd);
     int command=TrackPopupMenu(root,TPM_RETURNCMD|TPM_RIGHTBUTTON,screen.x,screen.y,0,g_hwnd,nullptr);
     if(command==ModeSmart)g_task_prefs.mode=TaskMode::Smart;
     else if(command==ModeCarousel)g_task_prefs.mode=TaskMode::Carousel;
-    else if(command==ModeFixed){g_task_prefs.mode=TaskMode::Fixed;if(g_visual_page>=0)g_task_prefs.fixed_page=(TaskPage)g_visual_page;}
+    else if(command==ModeFixed){
+        g_task_prefs.mode=TaskMode::Fixed;
+        if(g_task_prefs.scope==TaskScope::Together&&g_visual_page>=0)g_task_prefs.fixed_page=(TaskPage)g_visual_page;
+        if(g_provider_visual[0]>=0)g_task_prefs.fixed_claude=(TaskPage)g_provider_visual[0];
+        if(g_provider_visual[1]>=0)g_task_prefs.fixed_codex=(TaskPage)g_provider_visual[1];
+    }
+    else if(command==ScopeTogether)g_task_prefs.scope=TaskScope::Together;
+    else if(command==ScopeSeparate)g_task_prefs.scope=TaskScope::PerProvider;
     else if(command==ShowFive)g_task_prefs.show_five=!g_task_prefs.show_five;
     else if(command==ShowWeekly)g_task_prefs.show_weekly=!g_task_prefs.show_weekly;
     else if(command==ShowReserve)g_task_prefs.show_reserve=!g_task_prefs.show_reserve;
-    else if(command==PinCurrent){g_task_prefs.mode=TaskMode::Fixed;if(g_visual_page>=0)g_task_prefs.fixed_page=(TaskPage)g_visual_page;}
+    else if(command==PinCurrent){
+        g_task_prefs.mode=TaskMode::Fixed;
+        if(g_task_prefs.scope==TaskScope::Together&&g_visual_page>=0)g_task_prefs.fixed_page=(TaskPage)g_visual_page;
+        else if(contextProvider==0&&g_provider_visual[0]>=0)g_task_prefs.fixed_claude=(TaskPage)g_provider_visual[0];
+        else if(contextProvider==1&&g_provider_visual[1]>=0)g_task_prefs.fixed_codex=(TaskPage)g_provider_visual[1];
+    }
     else if(command==OpenDetails)OpenDesktopWidget();
     if(!g_task_prefs.show_five&&!g_task_prefs.show_weekly&&!g_task_prefs.show_reserve)g_task_prefs.show_five=true;
-    if(command>=ModeSmart&&command<=PinCurrent){g_manual_page=-1;SaveTaskbarPrefs();}
+    if(command>=ModeSmart&&command<=PinCurrent){g_manual_page=-1;g_provider_manual[0]=g_provider_manual[1]=-1;SaveTaskbarPrefs();}
     DestroyMenu(root); PostMessageW(g_hwnd,WM_NULL,0,0);
 }
 static bool DesktopIsForeground(){
@@ -629,6 +726,10 @@ static void CreateTarget(){ID3D11Texture2D* b=nullptr;g_swap->GetBuffer(0,IID_PP
 static void CleanupTarget(){if(g_target){g_target->Release();g_target=nullptr;}}
 static void CleanupDevice(){CleanupTarget();if(g_swap)g_swap->Release();if(g_context)g_context->Release();if(g_device)g_device->Release();}
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND,UINT,WPARAM,LPARAM);
+static int ProviderAtClientPoint(HWND hwnd,POINT point) {
+    RECT rect{};GetClientRect(hwnd,&rect);
+    return g_taskbar_compact?(point.y<(rect.bottom-rect.top)/2?0:1):(point.x<(rect.right-rect.left)/2?0:1);
+}
 static LRESULT CALLBACK WndProc(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp){
     // Desktop dragging is handled before ImGui so its input backend cannot
     // consume the click. SetWindowPos does not enter Windows' modal move loop,
@@ -636,18 +737,20 @@ static LRESULT CALLBACK WndProc(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp){
     if(msg==WM_LBUTTONDOWN&&!g_taskbar&&GET_Y_LPARAM(lp)<112){g_dragging=true;GetCursorPos(&g_drag_cursor);GetWindowRect(hwnd,&g_drag_window);SetCapture(hwnd);return 0;}
     if(msg==WM_MOUSEMOVE&&g_dragging){POINT p{};GetCursorPos(&p);POINT target{g_drag_window.left+p.x-g_drag_cursor.x,g_drag_window.top+p.y-g_drag_cursor.y};HWND parent=GetParent(hwnd);if(parent)MapWindowPoints(HWND_DESKTOP,parent,&target,1);SetWindowPos(hwnd,nullptr,target.x,target.y,0,0,SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE);return 0;}
     if(msg==WM_LBUTTONUP&&g_dragging){g_dragging=false;g_force_backdrop_capture=true;ReleaseCapture();return 0;}
-    if(msg==WM_LBUTTONDOWN&&g_taskbar){g_taskbar_swiping=true;g_taskbar_swipe_start={GET_X_LPARAM(lp),GET_Y_LPARAM(lp)};g_taskbar_swipe_x=0;SetCapture(hwnd);return 0;}
+    if(msg==WM_LBUTTONDOWN&&g_taskbar){g_taskbar_swiping=true;g_taskbar_swipe_start={GET_X_LPARAM(lp),GET_Y_LPARAM(lp)};g_taskbar_swipe_provider=g_task_prefs.scope==TaskScope::PerProvider?ProviderAtClientPoint(hwnd,g_taskbar_swipe_start):-1;g_taskbar_swipe_x=0;SetCapture(hwnd);return 0;}
     if(msg==WM_MOUSEMOVE&&g_taskbar_swiping){int delta=(int)GET_X_LPARAM(lp)-(int)g_taskbar_swipe_start.x;g_taskbar_swipe_x=(float)std::clamp(delta,-g_taskbar_width*2/3,g_taskbar_width*2/3);return 0;}
     if(msg==WM_LBUTTONUP&&g_taskbar_swiping){
-        bool changed=std::abs(g_taskbar_swipe_x)>28; int direction=g_taskbar_swipe_x<0?1:-1;
+        bool changed=std::abs(g_taskbar_swipe_x)>28; int direction=g_taskbar_swipe_x<0?1:-1;int swipedProvider=g_taskbar_swipe_provider;
         g_taskbar_swiping=false;ReleaseCapture();g_taskbar_swipe_x=0;
-        if(changed){TaskPage current=g_visual_page<0?TaskPage::FiveHour:(TaskPage)g_visual_page;g_manual_page=(int)StepPage(g_taskbar_state,current,direction);g_manual_until=std::chrono::steady_clock::now()+std::chrono::seconds(30);g_transition_direction=direction;}
+        if(changed&&g_task_prefs.scope==TaskScope::PerProvider){int index=std::clamp(swipedProvider,0,1);const Provider& provider=index==0?g_taskbar_state.claude:g_taskbar_state.codex;TaskPage current=g_provider_visual[index]<0?TaskPage::FiveHour:(TaskPage)g_provider_visual[index];g_provider_manual[index]=(int)StepProviderPage(provider,current,direction);g_provider_manual_until[index]=std::chrono::steady_clock::now()+std::chrono::seconds(30);g_provider_direction[index]=direction;}
+        else if(changed){TaskPage current=g_visual_page<0?TaskPage::FiveHour:(TaskPage)g_visual_page;g_manual_page=(int)StepPage(g_taskbar_state,current,direction);g_manual_until=std::chrono::steady_clock::now()+std::chrono::seconds(30);g_transition_direction=direction;}
         else OpenDesktopWidget();
+        g_taskbar_swipe_provider=-1;
         return 0;
     }
-    if(msg==WM_MOUSEWHEEL&&g_taskbar){int direction=GET_WHEEL_DELTA_WPARAM(wp)<0?1:-1;TaskPage current=g_visual_page<0?TaskPage::FiveHour:(TaskPage)g_visual_page;g_manual_page=(int)StepPage(g_taskbar_state,current,direction);g_manual_until=std::chrono::steady_clock::now()+std::chrono::seconds(30);g_transition_direction=direction;return 0;}
+    if(msg==WM_MOUSEWHEEL&&g_taskbar){int direction=GET_WHEEL_DELTA_WPARAM(wp)<0?1:-1;POINT point{GET_X_LPARAM(lp),GET_Y_LPARAM(lp)};ScreenToClient(hwnd,&point);if(g_task_prefs.scope==TaskScope::PerProvider){int index=ProviderAtClientPoint(hwnd,point);const Provider& provider=index==0?g_taskbar_state.claude:g_taskbar_state.codex;TaskPage current=g_provider_visual[index]<0?TaskPage::FiveHour:(TaskPage)g_provider_visual[index];g_provider_manual[index]=(int)StepProviderPage(provider,current,direction);g_provider_manual_until[index]=std::chrono::steady_clock::now()+std::chrono::seconds(30);g_provider_direction[index]=direction;}else{TaskPage current=g_visual_page<0?TaskPage::FiveHour:(TaskPage)g_visual_page;g_manual_page=(int)StepPage(g_taskbar_state,current,direction);g_manual_until=std::chrono::steady_clock::now()+std::chrono::seconds(30);g_transition_direction=direction;}return 0;}
     if(msg==WM_RBUTTONUP&&g_taskbar){POINT point{GET_X_LPARAM(lp),GET_Y_LPARAM(lp)};ClientToScreen(hwnd,&point);ShowTaskbarMenu(point);return 0;}
-    if(msg==WM_CAPTURECHANGED){if(g_dragging)g_force_backdrop_capture=true;g_dragging=false;g_taskbar_swiping=false;g_taskbar_swipe_x=0;return 0;}
+    if(msg==WM_CAPTURECHANGED){if(g_dragging)g_force_backdrop_capture=true;g_dragging=false;g_taskbar_swiping=false;g_taskbar_swipe_provider=-1;g_taskbar_swipe_x=0;return 0;}
     if(ImGui_ImplWin32_WndProcHandler(hwnd,msg,wp,lp))return true;
     switch(msg){
         case WM_SIZE:if(wp!=SIZE_MINIMIZED){g_resize_w=LOWORD(lp);g_resize_h=HIWORD(lp);}return 0;
