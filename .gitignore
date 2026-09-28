@@ -1,6 +1,7 @@
 # Local Python/build state
 .pytest_cache/
 build/
+work/
 *.egg-info/
 __pycache__/
 *.pyc
