@@ -36,6 +36,7 @@ static bool g_taskbar_compact = false;
 static bool g_language_ru = false;
 static bool g_desktop_parented = false;
 static HWND g_desktop_host = nullptr;
+static int g_desktop_z_mode = -1;
 static constexpr int kTaskbarWidth = 520;
 static constexpr int kTaskbarHeight = 44;
 static constexpr int kTaskbarCompactWidth = 340;
@@ -706,21 +707,57 @@ static void ShowTaskbarMenu(POINT screen) {
 }
 static bool DesktopIsForeground(){
     HWND fg=GetForegroundWindow();
-    if(!fg)return true;
+    if(!fg)return false;
     wchar_t cls[96]{};
     GetClassNameW(fg,cls,(int)std::size(cls));
     return _wcsicmp(cls,L"Progman")==0 || _wcsicmp(cls,L"WorkerW")==0 ||
            _wcsicmp(cls,L"SHELLDLL_DefView")==0 || _wcsicmp(cls,L"Desktop")==0;
 }
+struct DesktopOcclusionQuery { RECT widget{}; bool found=false; };
+static BOOL CALLBACK FindVisibleApplication(HWND window,LPARAM value){
+    auto* query=reinterpret_cast<DesktopOcclusionQuery*>(value);
+    if(window==g_hwnd||!IsWindowVisible(window)||IsIconic(window))return TRUE;
+    wchar_t cls[96]{};GetClassNameW(window,cls,(int)std::size(cls));
+    if(_wcsicmp(cls,L"Progman")==0||_wcsicmp(cls,L"WorkerW")==0||
+       _wcsicmp(cls,L"SHELLDLL_DefView")==0||_wcsicmp(cls,L"Shell_TrayWnd")==0||
+       _wcsicmp(cls,L"LimitBarGlassTaskbar")==0)return TRUE;
+    DWORD cloaked=0;
+    if(SUCCEEDED(DwmGetWindowAttribute(window,DWMWA_CLOAKED,&cloaked,sizeof(cloaked)))&&cloaked)return TRUE;
+    const LONG_PTR ex=GetWindowLongPtrW(window,GWL_EXSTYLE);
+    if((ex&WS_EX_TOOLWINDOW)||(ex&WS_EX_NOACTIVATE))return TRUE;
+    RECT bounds{},intersection{};
+    if(GetWindowRect(window,&bounds)&&IntersectRect(&intersection,&query->widget,&bounds)&&!IsRectEmpty(&intersection)){
+        query->found=true;return FALSE;
+    }
+    return TRUE;
+}
+static bool DesktopHasVisibleApplication(){
+    DesktopOcclusionQuery query{};
+    if(!GetWindowRect(g_hwnd,&query.widget))return false;
+    EnumWindows(FindVisibleApplication,reinterpret_cast<LPARAM>(&query));
+    return query.found;
+}
 static void KeepDesktopVisible(){
-    if(IsIconic(g_hwnd))ShowWindowAsync(g_hwnd,SW_RESTORE);
-    else if(!IsWindowVisible(g_hwnd))ShowWindowAsync(g_hwnd,SW_SHOWNOACTIVATE);
+    bool revealed=false;
+    if(IsIconic(g_hwnd)){ShowWindowAsync(g_hwnd,SW_RESTORE);revealed=true;}
+    else if(!IsWindowVisible(g_hwnd)){ShowWindowAsync(g_hwnd,SW_SHOWNOACTIVATE);revealed=true;}
     // Show Desktop makes the shell the foreground window. In that state the
     // desktop card is temporarily topmost so it is visible above the wallpaper,
-    // while ordinary application windows are still allowed to cover it.
-    // As soon as the user returns to an app, drop the topmost state again.
-    const HWND z=DesktopIsForeground()?HWND_TOPMOST:HWND_NOTOPMOST;
-    SetWindowPos(g_hwnd,z,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE|SWP_NOOWNERZORDER|SWP_SHOWWINDOW);
+    // but only when no real application overlaps it. Repeating HWND_NOTOPMOST
+    // continuously promotes a window inside the normal z-order band, so change
+    // bands only on a real state transition and park the card at the bottom when
+    // an application returns.
+    const bool topmost=DesktopIsForeground()&&!DesktopHasVisibleApplication();
+    const int mode=topmost?1:0;
+    if(mode!=g_desktop_z_mode||revealed){
+        if(topmost){
+            SetWindowPos(g_hwnd,HWND_TOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE|SWP_NOOWNERZORDER|SWP_SHOWWINDOW);
+        }else{
+            SetWindowPos(g_hwnd,HWND_NOTOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE|SWP_NOOWNERZORDER|SWP_SHOWWINDOW);
+            SetWindowPos(g_hwnd,HWND_BOTTOM,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE|SWP_NOOWNERZORDER|SWP_SHOWWINDOW);
+        }
+        g_desktop_z_mode=mode;
+    }
 }
 static bool CreateDevice(HWND hwnd){DXGI_SWAP_CHAIN_DESC sd{};sd.BufferCount=2;sd.BufferDesc.Format=DXGI_FORMAT_R8G8B8A8_UNORM;sd.BufferUsage=DXGI_USAGE_RENDER_TARGET_OUTPUT;sd.OutputWindow=hwnd;sd.SampleDesc.Count=1;sd.Windowed=TRUE;sd.SwapEffect=DXGI_SWAP_EFFECT_DISCARD;D3D_FEATURE_LEVEL fl;D3D_FEATURE_LEVEL levels[]={D3D_FEATURE_LEVEL_11_0,D3D_FEATURE_LEVEL_10_0};HRESULT hr=D3D11CreateDeviceAndSwapChain(nullptr,D3D_DRIVER_TYPE_HARDWARE,nullptr,0,levels,2,D3D11_SDK_VERSION,&sd,&g_swap,&g_device,&fl,&g_context);if(FAILED(hr))return false;CreateTarget();return true;}
 static void CreateTarget(){ID3D11Texture2D* b=nullptr;g_swap->GetBuffer(0,IID_PPV_ARGS(&b));g_device->CreateRenderTargetView(b,nullptr,&g_target);b->Release();}
