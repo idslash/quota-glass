@@ -22,10 +22,11 @@ from limitbar.windows import set_start_with_windows
 class NativeLimitBarUI:
     """Tray/controller for the isolated DXGI + DirectComposition frontend."""
 
-    def __init__(self, settings: Settings, on_refresh: Callable[[], None], on_exit: Callable[[], None]) -> None:
+    def __init__(self, settings: Settings, on_refresh: Callable[[], None], on_exit: Callable[[], None], on_providers_changed: Callable[[], None]) -> None:
         self.settings = settings
         self.on_refresh = on_refresh
         self.on_exit = on_exit
+        self.on_providers_changed = on_providers_changed
         self.snapshots: dict[str, UsageSnapshot] = {}
         self.events: queue.Queue[tuple[str, object]] = queue.Queue()
         self.root = tk.Tk()
@@ -61,6 +62,10 @@ class NativeLimitBarUI:
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         options = [f"--scale={self.settings.interface_scale}", f"--text-scale={self.settings.text_scale}"]
         options.append(f"--language={effective_language(self.settings.language)}")
+        if not self.settings.providers.get("claude", True):
+            options.append("--no-claude")
+        if not self.settings.providers.get("codex", True):
+            options.append("--no-codex")
         if "--taskbar" in arguments and self.settings.taskbar_mode == "compact":
             options.append("--compact")
         if self.settings.allow_screenshots:
@@ -136,6 +141,10 @@ class NativeLimitBarUI:
             pystray.MenuItem("Русский", choose("_language", "ru"), checked=lambda _m: self.settings.language == "ru", radio=True),
             pystray.MenuItem("English", choose("_language", "en"), checked=lambda _m: self.settings.language == "en", radio=True),
         )
+        monitoring_menu = pystray.Menu(
+            pystray.MenuItem(text("monitor_claude"), lambda _i, _m: self.events.put(("_provider", "claude")), checked=lambda _m: self.settings.providers.get("claude", True)),
+            pystray.MenuItem(text("monitor_chatgpt"), lambda _i, _m: self.events.put(("_provider", "codex")), checked=lambda _m: self.settings.providers.get("codex", True)),
+        )
         menu = pystray.Menu(
             pystray.MenuItem(text("desktop"), lambda _i, _m: self.events.put(("_desktop", True)), default=True),
             pystray.MenuItem(text("refresh"), lambda _i, _m: self.events.put(("_refresh", True))),
@@ -148,6 +157,7 @@ class NativeLimitBarUI:
             pystray.MenuItem(text("interface_size"), interface_menu),
             pystray.MenuItem(text("text_size"), text_menu),
             pystray.MenuItem(text("notifications"), notifications_menu),
+            pystray.MenuItem(text("monitoring"), monitoring_menu),
             pystray.MenuItem(text("language"), language_menu),
             pystray.MenuItem(
                 text("allow_screenshots"),
@@ -208,6 +218,13 @@ class NativeLimitBarUI:
                     self.settings.save()
                     self._restart_frontends()
                     self._tray.update_menu()
+                elif key == "_provider":
+                    provider_id = str(value)
+                    self.settings.providers[provider_id] = not self.settings.providers.get(provider_id, True)
+                    self.settings.save()
+                    self.on_providers_changed()
+                    self._restart_frontends()
+                    self._tray.update_menu()
                 elif key == "_screenshots":
                     self.settings.allow_screenshots = bool(value)
                     self.settings.save()
@@ -248,12 +265,22 @@ class NativeLimitBarUI:
         remaining = min(readings) if readings else None
         parts: list[str] = []
         for provider_id in ("claude", "codex"):
+            if not self.settings.providers.get(provider_id, True):
+                continue
             snapshot = self.snapshots.get(provider_id)
             primary = snapshot.primary if snapshot else None
             value = f"{primary.remaining_percent}%" if primary and primary.remaining_percent is not None else "—"
             parts.append(f"{snapshot.provider_name if snapshot else provider_id.title()}: {value}")
         self._tray.icon = _tray_image(remaining)
         self._tray.title = "LimitBar | " + " | ".join(parts)
+
+    def remove_disabled_providers(self, enabled: set[str]) -> None:
+        self.snapshots = {
+            provider_id: snapshot
+            for provider_id, snapshot in self.snapshots.items()
+            if provider_id in enabled
+        }
+        self._update_tray()
 
 
 def native_frontend_path() -> Path:

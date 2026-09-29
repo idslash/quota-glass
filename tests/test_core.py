@@ -36,6 +36,20 @@ def test_cache_ignores_corruption(tmp_path):
     assert SnapshotCache(path).load() == {}
 
 
+def test_cache_retain_removes_disabled_provider(tmp_path):
+    cache = SnapshotCache(tmp_path / "cache.json")
+    codex = UsageSnapshot(
+        provider_id="codex",
+        provider_name="ChatGPT",
+        source="test",
+        windows=(LimitWindow("five_hour", "5h", 10, None, 300),),
+    )
+    cache.save({"claude": snapshot(), "codex": codex})
+    retained = cache.retain({"codex"})
+    assert set(retained) == {"codex"}
+    assert set(cache.load()) == {"codex"}
+
+
 def test_backoff_respects_server_hint_and_resets():
     backoff = Backoff(180, maximum_seconds=1800)
     assert backoff.failure(jitter=1) == 180

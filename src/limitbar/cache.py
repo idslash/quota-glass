@@ -37,3 +37,11 @@ class SnapshotCache:
         temporary.write_text(json.dumps(value, separators=(",", ":")), encoding="utf-8")
         temporary.replace(self.path)
 
+    def retain(self, provider_ids: set[str]) -> dict[str, UsageSnapshot]:
+        snapshots = {
+            provider_id: snapshot
+            for provider_id, snapshot in self.load().items()
+            if provider_id in provider_ids
+        }
+        self.save(snapshots)
+        return snapshots

@@ -50,10 +50,12 @@ class LimitBarUI:
         settings: Settings,
         on_refresh: Callable[[], None],
         on_exit: Callable[[], None],
+        on_providers_changed: Callable[[], None],
     ) -> None:
         self.settings = settings
         self.on_refresh = on_refresh
         self.on_exit = on_exit
+        self.on_providers_changed = on_providers_changed
         self.snapshots: dict[str, UsageSnapshot] = {}
         self.events: queue.Queue[tuple[str, object]] = queue.Queue()
         self._embedded = False
@@ -334,6 +336,8 @@ class LimitBarUI:
             pystray.MenuItem("Desktop widget", lambda _i, _m: self.events.put(("_desktop", True)), default=True, checked=lambda _m: self.settings.show_desktop_widget),
             pystray.MenuItem("Refresh", lambda _i, _m: self.events.put(("_refresh", True))),
             pystray.MenuItem("Show taskbar strip", lambda _i, _m: self.events.put(("_show", not self.settings.show_widget)), checked=lambda _m: self.settings.show_widget),
+            pystray.MenuItem("Monitor Claude", lambda _i, _m: self.events.put(("_provider", "claude")), checked=lambda _m: self.settings.providers.get("claude", True)),
+            pystray.MenuItem("Monitor ChatGPT", lambda _i, _m: self.events.put(("_provider", "codex")), checked=lambda _m: self.settings.providers.get("codex", True)),
             pystray.MenuItem("Dock strip inside taskbar", lambda _i, _m: self.events.put(("_dock", not self.settings.dock_in_taskbar)), checked=lambda _m: self.settings.dock_in_taskbar),
             pystray.MenuItem("Start with Windows", lambda _i, _m: self.events.put(("_startup", not self.settings.start_with_windows)), checked=lambda _m: self.settings.start_with_windows),
             pystray.MenuItem("Open logs", lambda _i, _m: webbrowser.open((app_data_dir() / "limitbar.log").as_uri())),
@@ -347,6 +351,8 @@ class LimitBarUI:
         remaining = min(readings) if readings else None
         parts = []
         for provider_id in ("claude", "codex"):
+            if not self.settings.providers.get(provider_id, True):
+                continue
             snapshot = self.snapshots.get(provider_id)
             primary = snapshot.primary if snapshot else None
             value = f"{primary.remaining_percent}%" if primary and primary.remaining_percent is not None else "—"
@@ -378,6 +384,12 @@ class LimitBarUI:
                     set_start_with_windows(bool(value))
                     self.settings.save()
                     self._tray.update_menu()
+                elif key == "_provider":
+                    provider_id = str(value)
+                    self.settings.providers[provider_id] = not self.settings.providers.get(provider_id, True)
+                    self.settings.save()
+                    self.on_providers_changed()
+                    self._tray.update_menu()
                 elif key == "_exit":
                     self.on_exit()
                 elif isinstance(value, UsageSnapshot):
@@ -389,6 +401,17 @@ class LimitBarUI:
         except queue.Empty:
             pass
         self.root.after(150, self._drain_events)
+
+    def remove_disabled_providers(self, enabled: set[str]) -> None:
+        self.snapshots = {
+            provider_id: snapshot
+            for provider_id, snapshot in self.snapshots.items()
+            if provider_id in enabled
+        }
+        self._position_desktop()
+        self._render_compact()
+        self._render_desktop()
+        self._update_tray()
 
     def _tick(self) -> None:
         self._position_compact()

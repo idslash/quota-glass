@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "limitbar"
-version = "0.8.2"
+version = "0.8.3"
 description = "Minimal Windows taskbar companion for Claude and Codex usage limits"
 readme = "README.md"
 requires-python = ">=3.11"

@@ -34,6 +34,8 @@ static Glass::Renderer g_glass;
 static bool g_taskbar = false;
 static bool g_taskbar_compact = false;
 static bool g_language_ru = false;
+static bool g_claude_enabled = true;
+static bool g_codex_enabled = true;
 static bool g_desktop_parented = false;
 static HWND g_desktop_host = nullptr;
 static int g_desktop_z_mode = -1;
@@ -72,7 +74,7 @@ static std::chrono::steady_clock::time_point g_provider_transition[2] = {g_start
 static std::chrono::steady_clock::time_point g_provider_manual_until[2] = {std::chrono::steady_clock::time_point::min(),std::chrono::steady_clock::time_point::min()};
 
 struct Limit { std::string id; double used = -1; std::string reset; };
-struct Provider { std::string name; std::vector<Limit> limits; };
+struct Provider { std::string name; std::vector<Limit> limits; bool enabled=true; };
 struct State { Provider claude{"Claude"}; Provider codex{"ChatGPT"}; };
 enum class TaskPage { FiveHour=0, Weekly=1, Reserve=2 };
 enum class TaskMode { Smart=0, Carousel=1, Fixed=2 };
@@ -175,11 +177,14 @@ static std::string DemoReset(int minutes) {
 }
 static State ReadState() {
     State s; auto json=ReadAll(CachePath());
+    s.claude.enabled=g_claude_enabled;s.codex.enabled=g_codex_enabled;
     if (json.empty() && GetEnvironmentVariableW(L"LIMITBAR_DEMO", nullptr, 0)) {
-        s.claude.limits={{"five_hour",72,DemoReset(222)},{"seven_day",61,DemoReset(3780)}};
-        s.codex.limits={{"five_hour",36,DemoReset(168)},{"seven_day",82,DemoReset(7560)}}; return s;
+        if(g_claude_enabled)s.claude.limits={{"five_hour",72,DemoReset(222)},{"seven_day",61,DemoReset(3780)}};
+        if(g_codex_enabled)s.codex.limits={{"five_hour",36,DemoReset(168)},{"seven_day",82,DemoReset(7560)}}; return s;
     }
-    s.claude=ParseProvider(json,"claude","Claude"); s.codex=ParseProvider(json,"codex","ChatGPT"); return s;
+    if(g_claude_enabled)s.claude=ParseProvider(json,"claude","Claude");
+    if(g_codex_enabled)s.codex=ParseProvider(json,"codex","ChatGPT");
+    s.claude.enabled=g_claude_enabled;s.codex.enabled=g_codex_enabled;return s;
 }
 static const Limit* Primary(const Provider& p) {
     const Limit* best=nullptr; for (auto& x:p.limits) if (x.used>=0 && (!best || x.used>best->used)) best=&x; return best;
@@ -366,18 +371,29 @@ static void ProviderCard(ImDrawList* d,const Provider& p,float x,float y,float w
 }
 static void DrawDesktop(const State& state,int w,int h,float scale) {
     SubmitPanel((float)w,(float)h,1*scale,30*scale);
-    const float pad=22*scale, cardW=w-2*pad, claudeCardH=220*scale;
-    const bool hasReserve=state.codex.limits.size()>2;
-    const float codexY=(hasReserve?348.f:356.f)*scale;
-    const float codexCardH=(hasReserve?282.f:220.f)*scale;
-    SubmitInsetGlass(pad,116*scale,cardW,claudeCardH,scale);
-    SubmitInsetGlass(pad,codexY,cardW,codexCardH,scale);
+    const float pad=22*scale,cardW=w-2*pad;
+    const bool showClaude=state.claude.enabled,showCodex=state.codex.enabled;
     auto* d=ImGui::GetBackgroundDrawList(); float text=scale*g_text_scale;
     AddText(d,g_semibold,11*text,ImVec2(28*scale,22*scale),C(206,213,232),"PLAN USAGE");
-    AddText(d,g_semibold,30*text,ImVec2(28*scale,43*scale),C(255,255,255),"Claude + ChatGPT");
-    AddText(d,g_regular,13*text,ImVec2(28*scale,84*scale),C(205,215,230),"Live limits and reset times");
-    ProviderCard(d,state.claude,pad,116*scale,cardW,scale,C(255,185,104));
-    ProviderCard(d,state.codex,pad,codexY,cardW,scale,C(120,181,255));
+    std::string heading=showClaude&&showCodex?"Claude + ChatGPT":showClaude?"Claude usage":showCodex?"ChatGPT usage":"LimitBar";
+    AddText(d,g_semibold,30*text,ImVec2(28*scale,43*scale),C(255,255,255),heading);
+    AddText(d,g_regular,13*text,ImVec2(28*scale,84*scale),C(205,215,230),showClaude||showCodex?"Live limits and reset times":"Enable a provider from the tray menu");
+    if(showClaude&&showCodex){
+        const float claudeCardH=220.f*scale;
+        const bool hasReserve=state.codex.limits.size()>2;
+        const float codexY=(hasReserve?348.f:356.f)*scale;
+        const float codexCardH=(hasReserve?282.f:220.f)*scale;
+        SubmitInsetGlass(pad,116*scale,cardW,claudeCardH,scale);
+        SubmitInsetGlass(pad,codexY,cardW,codexCardH,scale);
+        ProviderCard(d,state.claude,pad,116*scale,cardW,scale,C(255,185,104));
+        ProviderCard(d,state.codex,pad,codexY,cardW,scale,C(120,181,255));
+    }else if(showClaude||showCodex){
+        const Provider& provider=showClaude?state.claude:state.codex;
+        const float cardH=(provider.limits.size()>2?282.f:220.f)*scale;
+        const float cardY=(provider.limits.size()>2?154.f:184.f)*scale;
+        SubmitInsetGlass(pad,cardY,cardW,cardH,scale);
+        ProviderCard(d,provider,pad,cardY,cardW,scale,showClaude?C(255,185,104):C(120,181,255));
+    }
     AddText(d,g_regular,12*text,ImVec2(28*scale,h-43*scale),C(194,207,223),"Updates automatically");
     AddText(d,g_semibold,11*text,ImVec2(w-116*scale,h-43*scale),C(215,225,240),"LIMITBAR");
 }
@@ -437,6 +453,20 @@ static void DrawProviderSlider(ImDrawList* d,const Provider& provider,int provid
     d->PopClipRect();
 }
 static void DrawTaskbarSeparate(ImDrawList* d,const State& state,int w,int h,float scale) {
+    if(!state.claude.enabled||!state.codex.enabled){
+        const bool claude=state.claude.enabled;
+        const Provider& provider=claude?state.claude:state.codex;
+        const int index=claude?0:1;
+        const ImU32 accent=claude?C(255,181,101):C(130,181,255);
+        if(g_taskbar_compact){
+            float pad=12*scale,rowWidth=w-2*pad,y=(h-16*scale)*.5f;
+            DrawProviderSlider(d,provider,index,pad,y,rowWidth,scale,accent,true);
+        }else{
+            float width=std::min(w-30*scale,360*scale),x=(w-width)*.5f,y=(h-38*scale)*.5f;
+            DrawProviderSlider(d,provider,index,x,y,width,scale,accent,false);
+        }
+        return;
+    }
     if(g_taskbar_compact) {
         float pad=12*scale,rowWidth=w-2*pad,y=(h-35*scale)*.5f;
         DrawProviderSlider(d,state.claude,0,pad,y,rowWidth,scale,C(255,181,101),true);
@@ -502,7 +532,7 @@ static void DrawTaskbar(const State& state,int w,int h,float scale) {
 
 int main(int argc,char** argv) {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-    for(int i=1;i<argc;++i){std::string arg=argv[i];if(arg=="--taskbar")g_taskbar=true;else if(arg=="--compact")g_taskbar_compact=true;else if(arg=="--allow-capture")g_allow_capture=true;else if(arg=="--language=ru")g_language_ru=true;else if(arg.rfind("--scale=",0)==0)g_interface_scale=std::clamp(std::stof(arg.substr(8)),1.f,1.5f);else if(arg.rfind("--text-scale=",0)==0)g_text_scale=std::clamp(std::stof(arg.substr(13)),1.f,1.3f);}
+    for(int i=1;i<argc;++i){std::string arg=argv[i];if(arg=="--taskbar")g_taskbar=true;else if(arg=="--compact")g_taskbar_compact=true;else if(arg=="--allow-capture")g_allow_capture=true;else if(arg=="--language=ru")g_language_ru=true;else if(arg=="--no-claude")g_claude_enabled=false;else if(arg=="--no-codex")g_codex_enabled=false;else if(arg.rfind("--scale=",0)==0)g_interface_scale=std::clamp(std::stof(arg.substr(8)),1.f,1.5f);else if(arg.rfind("--text-scale=",0)==0)g_text_scale=std::clamp(std::stof(arg.substr(13)),1.f,1.3f);}
     if(g_taskbar)LoadTaskbarPrefs();
     const wchar_t* cls=g_taskbar?L"LimitBarGlassTaskbar":L"LimitBarGlassDesktop";
     HANDLE mutex=CreateMutexW(nullptr,TRUE,g_taskbar?L"Local\\LimitBarGlassTaskbar":L"Local\\LimitBarGlassDesktop");
