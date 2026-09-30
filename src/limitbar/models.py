@@ -18,6 +18,7 @@ class LimitWindow:
     used_percent: float | None
     resets_at: datetime | None = None
     duration_minutes: int | None = None
+    projected_exhaustion_at: datetime | None = None
 
     @property
     def remaining_percent(self) -> int | None:
@@ -59,6 +60,7 @@ class UsageSnapshot:
                     "used_percent": item.used_percent,
                     "resets_at": item.resets_at.isoformat() if item.resets_at else None,
                     "duration_minutes": item.duration_minutes,
+                    "projected_exhaustion_at": item.projected_exhaustion_at.isoformat() if item.projected_exhaustion_at else None,
                 }
                 for item in self.windows
             ],
@@ -80,6 +82,7 @@ class UsageSnapshot:
                     used_percent=_number(item.get("used_percent")),
                     resets_at=_parse_time(item.get("resets_at")),
                     duration_minutes=_integer(item.get("duration_minutes")),
+                    projected_exhaustion_at=_parse_time(item.get("projected_exhaustion_at")),
                 )
                 for item in value.get("windows", [])
             ),
@@ -125,4 +128,3 @@ def format_reset(instant: datetime | None, now: datetime | None = None) -> str:
         return f"reset {hours}h {rem // 60}m"
     days, rem = divmod(seconds, 86400)
     return f"reset {days}d {rem // 3600}h"
-

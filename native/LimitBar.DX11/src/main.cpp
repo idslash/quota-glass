@@ -73,7 +73,7 @@ static int g_provider_direction[2] = {1,1};
 static std::chrono::steady_clock::time_point g_provider_transition[2] = {g_started_at,g_started_at};
 static std::chrono::steady_clock::time_point g_provider_manual_until[2] = {std::chrono::steady_clock::time_point::min(),std::chrono::steady_clock::time_point::min()};
 
-struct Limit { std::string id; double used = -1; std::string reset; };
+struct Limit { std::string id; double used = -1; std::string reset; std::string exhaustion; };
 struct Provider { std::string name; std::vector<Limit> limits; bool enabled=true; };
 struct State { Provider claude{"Claude"}; Provider codex{"ChatGPT"}; };
 enum class TaskPage { FiveHour=0, Weekly=1, Reserve=2 };
@@ -161,9 +161,9 @@ static std::string Section(const std::string& json, const char* key) {
 }
 static Provider ParseProvider(const std::string& json, const char* key, const char* fallback) {
     Provider out{fallback}; std::string s = Section(json, key); if (s.empty()) return out;
-    std::regex item(R"re("id":"([^"]+)","label":"[^"]*","used_percent":(null|-?[0-9.]+),"resets_at":(null|"([^"]*)"))re");
+    std::regex item(R"re("id":"([^"]+)","label":"[^"]*","used_percent":(null|-?[0-9.]+),"resets_at":(null|"([^"]*)"),"duration_minutes":(?:null|[0-9]+)(?:,"projected_exhaustion_at":(null|"([^"]*)"))?)re");
     for (std::sregex_iterator it(s.begin(),s.end(),item), end; it!=end; ++it) {
-        Limit v; v.id=(*it)[1].str(); if ((*it)[2].str()!="null") v.used=std::stod((*it)[2].str()); v.reset=(*it)[4].str(); out.limits.push_back(v);
+        Limit v; v.id=(*it)[1].str(); if ((*it)[2].str()!="null") v.used=std::stod((*it)[2].str()); v.reset=(*it)[4].str(); v.exhaustion=(*it)[6].str(); out.limits.push_back(v);
     }
     return out;
 }
@@ -310,6 +310,18 @@ static std::string TaskReset(const Limit& limit) {
     if(seconds<86400){std::snprintf(text,sizeof(text),"reset %s%lldh %lldm",approx,seconds/3600,(seconds%3600)/60);return text;}
     std::snprintf(text,sizeof(text),"reset %s%lldd %lldh",approx,seconds/86400,(seconds%86400)/3600);return text;
 }
+static std::string PaceText(const Limit& limit,bool compact=false) {
+    std::chrono::system_clock::time_point exhaustion,reset;
+    if(!ParseIsoUtc(limit.exhaustion,exhaustion))return "";
+    const auto now=std::chrono::system_clock::now();
+    if(ParseIsoUtc(limit.reset,reset)&&exhaustion>=reset-std::chrono::minutes(5))return compact?"enough to reset":"Pace: enough to reset";
+    auto seconds=std::max<long long>(0,std::chrono::duration_cast<std::chrono::seconds>(exhaustion-now).count());
+    char text[64]={};
+    if(seconds<60)return compact?"<1m left":"Pace: <1 min left";
+    if(seconds<3600){std::snprintf(text,sizeof(text),compact?"~%lldm left":"Pace: ~%lld min left",seconds/60);return text;}
+    if(seconds<86400){std::snprintf(text,sizeof(text),compact?"~%lldh %lldm left":"Pace: ~%lld hr %lld min left",seconds/3600,(seconds%3600)/60);return text;}
+    std::snprintf(text,sizeof(text),compact?"~%lldd %lldh left":"Pace: ~%lld d %lld hr left",seconds/86400,(seconds%86400)/3600);return text;
+}
 static std::string Ellipsize(std::string s, float maxw, ImFont* f, float size) {
     if (f->CalcTextSizeA(size,FLT_MAX,0,s.c_str()).x<=maxw) return s;
     while (s.size()>4 && f->CalcTextSizeA(size,FLT_MAX,0,(s+"...").c_str()).x>maxw) s.pop_back(); return s+"...";
@@ -339,7 +351,8 @@ static void ProviderRows(ImDrawList* d,const Provider& p,float x,float& y,float 
         float top=y; double left=l.used<0?-1:100-l.used; std::string lefts=left<0?"-":std::to_string((int)std::round(left))+"% left";
         AddText(d,g_semibold,14*text,ImVec2(x,top),C(250,252,255),Ellipsize(LimitName(l),width-110*scale,g_semibold,14*text));
         float vw=g_semibold->CalcTextSizeA(14*text,FLT_MAX,0,lefts.c_str()).x; AddText(d,g_semibold,14*text,ImVec2(x+width-vw,top),left<0?C(190,205,220):LeftColor(left),lefts);
-        AddText(d,g_regular,font_small,ImVec2(x,top+21*scale),C(198,213,228),ResetText(l));
+        std::string detail=ResetText(l),pace=PaceText(l);if(!pace.empty())detail+="  ·  "+pace;
+        AddText(d,g_regular,font_small,ImVec2(x,top+21*scale),C(198,213,228),Ellipsize(detail,width,g_regular,font_small));
         std::string used=l.used<0?"-":std::to_string((int)std::round(l.used))+"% used"; float uw=g_regular->CalcTextSizeA(font_small,FLT_MAX,0,used.c_str()).x;
         AddText(d,g_regular,font_small,ImVec2(x+width-uw,top+21*scale),C(198,213,228),used);
         Progress(d,ImVec2(x,top+43*scale),ImVec2(x+width,top+50*scale),l.used); y+=62*scale;
@@ -364,7 +377,8 @@ static void ProviderCard(ImDrawList* d,const Provider& p,float x,float y,float w
         float pw=g_semibold->CalcTextSizeA(18*text,FLT_MAX,0,pct.c_str()).x;
         ImVec2 pctPos(x+width-22*scale-pw,top-3*scale);
         AddReadableText(d,g_semibold,18*text,pctPos,C(248,250,253),pct,scale);
-        AddText(d,g_regular,12*text,ImVec2(x+22*scale,top+24*scale),C(218,226,236),Ellipsize(ResetText(l),width-44*scale,g_regular,12*text));
+        std::string detail=ResetText(l),pace=PaceText(l);if(!pace.empty())detail+="  ·  "+pace;
+        AddText(d,g_regular,12*text,ImVec2(x+22*scale,top+24*scale),C(218,226,236),Ellipsize(detail,width-44*scale,g_regular,12*text));
         Progress(d,ImVec2(x+22*scale,top+48*scale),ImVec2(x+width-22*scale,top+55*scale),l.used);
         ++index;
     }
@@ -421,7 +435,8 @@ static void TaskProviderContent(ImDrawList* d,const Provider& p,const Limit* l,f
     AddText(d,g_semibold,nameSize,ImVec2(x+15*scale,y-1*scale),C(250,252,255),Ellipsize(p.name,width-78*scale,g_semibold,nameSize));
     std::string v=left<0?"--":std::to_string((int)std::round(left))+"%"; float vw=g_semibold->CalcTextSizeA(valueSize,FLT_MAX,0,v.c_str()).x;
     AddReadableText(d,g_semibold,valueSize,ImVec2(x+width-vw,y-2*scale),left<0?C(210,220,232):LeftColor(left),v,scale);
-    std::string detail=l?(std::string(TaskWindowLabel(l))+"  ·  "+TaskReset(*l)):"connecting";
+    std::string detail="connecting";
+    if(l){std::string pace=PaceText(*l,true);detail=std::string(TaskWindowLabel(l))+"  ·  "+(pace.empty()?TaskReset(*l):pace);}
     AddText(d,g_regular,detailSize,ImVec2(x+15*scale,y+19*scale),C(184,198,214),Ellipsize(detail,width-15*scale,g_regular,detailSize));
     Progress(d,ImVec2(x,y+34*scale),ImVec2(x+width,y+37*scale),used);
 }

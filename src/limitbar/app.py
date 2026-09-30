@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from limitbar.adapters import ClaudeUsageAdapter, CodexUsageAdapter
 from limitbar.cache import SnapshotCache
 from limitbar.config import Settings
+from limitbar.forecast import UsageForecaster
 from limitbar.logging_setup import configure_logging
 from limitbar.models import LimitWindow, UsageSnapshot
 from limitbar.poller import PollCoordinator
@@ -43,6 +44,7 @@ def main() -> None:
                 poller.stop()
             enabled = {provider_id for provider_id, value in settings.providers.items() if value}
             cache.retain(enabled)
+            UsageForecaster().retain(enabled)
             if ui:
                 ui.remove_disabled_providers(enabled)
             poller = PollCoordinator(enabled_adapters(), settings.poll_seconds, cache, ui.post_snapshot)

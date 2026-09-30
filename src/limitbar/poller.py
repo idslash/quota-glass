@@ -10,6 +10,7 @@ from typing import Callable
 
 from limitbar.adapters.base import ProviderError, UsageAdapter
 from limitbar.cache import SnapshotCache
+from limitbar.forecast import UsageForecaster
 from limitbar.models import Health, UsageSnapshot
 
 
@@ -48,6 +49,7 @@ class PollCoordinator:
         self.poll_seconds = poll_seconds
         self.cache = cache
         self.callback = callback
+        self.forecaster = UsageForecaster()
         self.snapshots = cache.load()
         self._stop = threading.Event()
         self._refresh = {adapter.provider_id: threading.Event() for adapter in adapters}
@@ -109,6 +111,7 @@ class PollCoordinator:
 
     def _record(self, snapshot: UsageSnapshot) -> None:
         with self._lock:
+            snapshot = self.forecaster.enrich(snapshot)
             self.snapshots[snapshot.provider_id] = snapshot
             self.cache.save(self.snapshots)
         self.callback(snapshot.provider_id, snapshot)
