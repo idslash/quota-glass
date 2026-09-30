@@ -19,6 +19,10 @@ class LimitWindow:
     resets_at: datetime | None = None
     duration_minutes: int | None = None
     projected_exhaustion_at: datetime | None = None
+    forecast_confidence: str | None = None
+    forecast_accuracy_percent: float | None = None
+    historical_windows: int = 0
+    historical_rate_per_hour: float | None = None
 
     @property
     def remaining_percent(self) -> int | None:
@@ -65,6 +69,10 @@ class UsageSnapshot:
                     "resets_at": item.resets_at.isoformat() if item.resets_at else None,
                     "duration_minutes": item.duration_minutes,
                     "projected_exhaustion_at": item.projected_exhaustion_at.isoformat() if item.projected_exhaustion_at else None,
+                    "forecast_confidence": item.forecast_confidence,
+                    "forecast_accuracy_percent": item.forecast_accuracy_percent,
+                    "historical_windows": item.historical_windows,
+                    "historical_rate_per_hour": item.historical_rate_per_hour,
                 }
                 for item in self.windows
             ],
@@ -89,6 +97,10 @@ class UsageSnapshot:
                     resets_at=_parse_time(item.get("resets_at")),
                     duration_minutes=_integer(item.get("duration_minutes")),
                     projected_exhaustion_at=_parse_time(item.get("projected_exhaustion_at")),
+                    forecast_confidence=str(item["forecast_confidence"]) if item.get("forecast_confidence") else None,
+                    forecast_accuracy_percent=_number(item.get("forecast_accuracy_percent")),
+                    historical_windows=_integer(item.get("historical_windows")) or 0,
+                    historical_rate_per_hour=_number(item.get("historical_rate_per_hour")),
                 )
                 for item in value.get("windows", [])
             ),

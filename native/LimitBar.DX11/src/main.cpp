@@ -75,7 +75,7 @@ static int g_provider_direction[2] = {1,1};
 static std::chrono::steady_clock::time_point g_provider_transition[2] = {g_started_at,g_started_at};
 static std::chrono::steady_clock::time_point g_provider_manual_until[2] = {std::chrono::steady_clock::time_point::min(),std::chrono::steady_clock::time_point::min()};
 
-struct Limit { std::string id; double used = -1; std::string reset; std::string exhaustion; };
+struct Limit { std::string id; double used = -1; std::string reset; std::string exhaustion; std::string confidence; double accuracy=-1; int historical_windows=0; double historical_rate=-1; };
 struct Provider { std::string name; std::vector<Limit> limits; bool enabled=true; int banked_resets=-1; std::string banked_expiry; };
 struct State { Provider claude{"Claude"}; Provider codex{"ChatGPT"}; };
 enum class TaskPage { FiveHour=0, Weekly=1, Reserve=2 };
@@ -164,9 +164,9 @@ static std::string Section(const std::string& json, const char* key) {
 }
 static Provider ParseProvider(const std::string& json, const char* key, const char* fallback) {
     Provider out{fallback}; std::string s = Section(json, key); if (s.empty()) return out;
-    std::regex item(R"re("id":"([^"]+)","label":"[^"]*","used_percent":(null|-?[0-9.]+),"resets_at":(null|"([^"]*)"),"duration_minutes":(?:null|[0-9]+)(?:,"projected_exhaustion_at":(null|"([^"]*)"))?)re");
+    std::regex item(R"re("id":"([^"]+)","label":"[^"]*","used_percent":(null|-?[0-9.]+),"resets_at":(null|"([^"]*)"),"duration_minutes":(?:null|[0-9]+)(?:,"projected_exhaustion_at":(null|"([^"]*)"))?(?:,"forecast_confidence":(null|"([^"]*)"),"forecast_accuracy_percent":(null|-?[0-9.]+),"historical_windows":([0-9]+),"historical_rate_per_hour":(null|-?[0-9.]+))?)re");
     for (std::sregex_iterator it(s.begin(),s.end(),item), end; it!=end; ++it) {
-        Limit v; v.id=(*it)[1].str(); if ((*it)[2].str()!="null") v.used=std::stod((*it)[2].str()); v.reset=(*it)[4].str(); v.exhaustion=(*it)[6].str(); out.limits.push_back(v);
+        Limit v; v.id=(*it)[1].str(); if ((*it)[2].str()!="null") v.used=std::stod((*it)[2].str()); v.reset=(*it)[4].str(); v.exhaustion=(*it)[6].str();v.confidence=(*it)[8].str();if(!(*it)[9].str().empty()&&(*it)[9].str()!="null")v.accuracy=std::stod((*it)[9].str());if(!(*it)[10].str().empty())v.historical_windows=std::stoi((*it)[10].str());if(!(*it)[11].str().empty()&&(*it)[11].str()!="null")v.historical_rate=std::stod((*it)[11].str());out.limits.push_back(v);
     }
     const std::string marker=std::string("\"")+key+"\":{";
     size_t begin=json.find(marker),windows=begin==std::string::npos?std::string::npos:json.find("\"windows\":[",begin);
@@ -394,6 +394,24 @@ static std::string BankedResetText(const Provider& provider) {
     }
     return text;
 }
+static std::string AnalyticsText(const Provider& provider) {
+    const Limit* limit=nullptr;
+    for(const auto& candidate:provider.limits)if(HasPrefix(candidate.id,"seven_day")){limit=&candidate;break;}
+    if(!limit)limit=Primary(provider);
+    if(!limit)return "";
+    if(limit->historical_windows<=0)return g_language_ru?"Прогноз обучается · ждём завершения первого окна":"Forecast learning · waiting for the first completed window";
+    char text[160]={};
+    if(g_language_ru){
+        if(limit->accuracy>=0&&limit->historical_rate>=0)std::snprintf(text,sizeof(text),"История: %d окон · точность %.0f%% · обычно %.2f%%/ч",limit->historical_windows,limit->accuracy,limit->historical_rate);
+        else if(limit->historical_rate>=0)std::snprintf(text,sizeof(text),"История: %d окон · обычно %.2f%%/ч · калибровка",limit->historical_windows,limit->historical_rate);
+        else std::snprintf(text,sizeof(text),"История: %d окон · калибровка",limit->historical_windows);
+    }else{
+        if(limit->accuracy>=0&&limit->historical_rate>=0)std::snprintf(text,sizeof(text),"History: %d windows · %.0f%% accurate · typical %.2f%%/h",limit->historical_windows,limit->accuracy,limit->historical_rate);
+        else if(limit->historical_rate>=0)std::snprintf(text,sizeof(text),"History: %d windows · typical %.2f%%/h · calibrating",limit->historical_windows,limit->historical_rate);
+        else std::snprintf(text,sizeof(text),"History: %d windows · calibrating",limit->historical_windows);
+    }
+    return text;
+}
 static std::string Ellipsize(std::string s, float maxw, ImFont* f, float size) {
     if (f->CalcTextSizeA(size,FLT_MAX,0,s.c_str()).x<=maxw) return s;
     while (s.size()>4 && f->CalcTextSizeA(size,FLT_MAX,0,(s+"...").c_str()).x>maxw) s.pop_back(); return s+"...";
@@ -439,14 +457,17 @@ static void ProviderCard(ImDrawList* d,const Provider& p,float x,float y,float w
     float rw=g_semibold->CalcTextSizeA(12*text,FLT_MAX,0,remaining.c_str()).x;
     float remainingX=x+width-20*scale-rw;
     AddReadableText(d,g_semibold,12*text,ImVec2(remainingX,y+21*scale),primary?LeftColor(100-primary->used):C(225,231,239),remaining,scale);
-    const std::string banked=BankedResetText(p);
-    const float rowStart=banked.empty()?57.f:70.f;
+    const std::string banked=BankedResetText(p),analytics=AnalyticsText(p);
+    const int insightLines=(!banked.empty()?1:0)+(!analytics.empty()?1:0);
+    const float rowStart=insightLines==0?57.f:insightLines==1?70.f:81.f;
+    const float rowStep=insightLines==2?68.f:72.f;
     if(!banked.empty())AddText(d,g_regular,10.5f*text,ImVec2(x+43*scale,y+42*scale),p.banked_resets>0?C(139,232,193):C(185,198,214),Ellipsize(banked,width-65*scale,g_regular,10.5f*text));
+    if(!analytics.empty())AddText(d,g_regular,10.5f*text,ImVec2(x+43*scale,y+(banked.empty()?42:55)*scale),C(183,205,232),Ellipsize(analytics,width-65*scale,g_regular,10.5f*text));
     if(p.limits.empty()) { AddText(d,g_regular,14*text,ImVec2(x+22*scale,y+78*scale),C(214,224,235),g_language_ru?"Ожидание данных...":"Waiting for usage data..."); return; }
     int index=0;
     for(const auto& l:p.limits) {
         if(index>=3) break;
-        float top=y+(rowStart+index*72)*scale;
+        float top=y+(rowStart+index*rowStep)*scale;
         std::string pct=l.used<0?"-":std::to_string((int)std::round(l.used))+"%";
         AddText(d,g_semibold,14*text,ImVec2(x+22*scale,top),C(250,252,255),Ellipsize(LimitName(l),width-120*scale,g_semibold,14*text));
         float pw=g_semibold->CalcTextSizeA(18*text,FLT_MAX,0,pct.c_str()).x;
