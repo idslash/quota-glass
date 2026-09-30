@@ -269,7 +269,7 @@ static TaskPage TargetTaskPage(const State& state) {
     double phase=std::fmod(elapsed,90.0); return attention!=base && phase>=70.0 && phase<80.0?attention:base;
 }
 static bool IsEstimated(const Limit& l) { return l.id.find("_estimated")!=std::string::npos; }
-static std::string LimitName(const Limit& l) { return HasPrefix(l.id,"five_hour")?"5-hour limit":HasPrefix(l.id,"seven_day")?"Weekly - all models":l.id=="gpt_reserve"?"GPT reserve":l.id; }
+static std::string LimitName(const Limit& l) { return HasPrefix(l.id,"five_hour")?(g_language_ru?"Лимит на 5 часов":"5-hour limit"):HasPrefix(l.id,"seven_day")?(g_language_ru?"Недельный · все модели":"Weekly - all models"):l.id=="gpt_reserve"?(g_language_ru?"Резерв GPT":"GPT reserve"):l.id; }
 static bool ParseIsoUtc(const std::string& value, std::chrono::system_clock::time_point& out) {
     if (value.size() < 19) return false;
     std::tm tm{};
@@ -290,21 +290,33 @@ static bool ParseIsoUtc(const std::string& value, std::chrono::system_clock::tim
 }
 static std::string ResetText(const Limit& limit) {
     std::chrono::system_clock::time_point reset;
-    if (!ParseIsoUtc(limit.reset, reset)) return "Reset time unavailable";
+    if (!ParseIsoUtc(limit.reset, reset)) return g_language_ru?"Время сброса недоступно":"Reset time unavailable";
     auto seconds = std::max<long long>(0, std::chrono::duration_cast<std::chrono::seconds>(reset - std::chrono::system_clock::now()).count());
     char text[64] = {};
-    const char* prefix=IsEstimated(limit)?"~Resets":"Resets";
-    if (seconds < 60) return std::string(prefix)+" in <1 min";
-    if (seconds < 3600) { std::snprintf(text, sizeof(text), "%s in %lld min",prefix, seconds / 60); return text; }
-    if (seconds < 86400) { std::snprintf(text, sizeof(text), "%s in %lld hr %lld min",prefix, seconds / 3600, (seconds % 3600) / 60); return text; }
-    std::snprintf(text, sizeof(text), "%s in %lld d %lld hr",prefix, seconds / 86400, (seconds % 86400) / 3600); return text;
+    const char* prefix=IsEstimated(limit)?"~":"";
+    if(g_language_ru){
+        if(seconds<60)return std::string(prefix)+"Сброс меньше чем через минуту";
+        if(seconds<3600){std::snprintf(text,sizeof(text),"%sСброс через %lld мин",prefix,seconds/60);return text;}
+        if(seconds<86400){std::snprintf(text,sizeof(text),"%sСброс через %lld ч %lld мин",prefix,seconds/3600,(seconds%3600)/60);return text;}
+        std::snprintf(text,sizeof(text),"%sСброс через %lld д %lld ч",prefix,seconds/86400,(seconds%86400)/3600);return text;
+    }
+    if (seconds < 60) return std::string(prefix)+"Resets in <1 min";
+    if (seconds < 3600) { std::snprintf(text, sizeof(text), "%sResets in %lld min",prefix, seconds / 60); return text; }
+    if (seconds < 86400) { std::snprintf(text, sizeof(text), "%sResets in %lld hr %lld min",prefix, seconds / 3600, (seconds % 3600) / 60); return text; }
+    std::snprintf(text, sizeof(text), "%sResets in %lld d %lld hr",prefix, seconds / 86400, (seconds % 86400) / 3600); return text;
 }
 static std::string ResetShort(const Limit& limit) {
     std::chrono::system_clock::time_point reset;
-    if (!ParseIsoUtc(limit.reset, reset)) return "reset unavailable";
+    if (!ParseIsoUtc(limit.reset, reset)) return g_language_ru?"сброс недоступен":"reset unavailable";
     auto seconds = std::max<long long>(0, std::chrono::duration_cast<std::chrono::seconds>(reset - std::chrono::system_clock::now()).count());
     char text[48] = {};
     const char* prefix=IsEstimated(limit)?"~":"";
+    if(g_language_ru){
+        if(seconds<60)return std::string("сброс ")+prefix+"<1 мин";
+        if(seconds<3600){std::snprintf(text,sizeof(text),"сброс %s%lld мин",prefix,seconds/60);return text;}
+        if(seconds<86400){std::snprintf(text,sizeof(text),"сброс %s%lld ч %lld мин",prefix,seconds/3600,(seconds%3600)/60);return text;}
+        std::snprintf(text,sizeof(text),"сброс %s%lld д %lld ч",prefix,seconds/86400,(seconds%86400)/3600);return text;
+    }
     if (seconds < 60) return std::string(prefix)+"<1m to reset";
     if (seconds < 3600) { std::snprintf(text, sizeof(text), "%s%lldm to reset",prefix, seconds / 60); return text; }
     if (seconds < 86400) { std::snprintf(text, sizeof(text), "%s%lldh %lldm to reset",prefix, seconds / 3600, (seconds % 3600) / 60); return text; }
@@ -312,9 +324,15 @@ static std::string ResetShort(const Limit& limit) {
 }
 static std::string TaskReset(const Limit& limit) {
     std::chrono::system_clock::time_point reset;
-    if (!ParseIsoUtc(limit.reset, reset)) return "reset --";
+    if (!ParseIsoUtc(limit.reset, reset)) return g_language_ru?"сброс —":"reset --";
     auto seconds = std::max<long long>(0, std::chrono::duration_cast<std::chrono::seconds>(reset - std::chrono::system_clock::now()).count());
     const char* approx=IsEstimated(limit)?"~":""; char text[40] = {};
+    if(g_language_ru){
+        if(seconds<60)return std::string("сброс ")+approx+"<1 мин";
+        if(seconds<3600){std::snprintf(text,sizeof(text),"сброс %s%lld мин",approx,seconds/60);return text;}
+        if(seconds<86400){std::snprintf(text,sizeof(text),"сброс %s%lld ч %lld мин",approx,seconds/3600,(seconds%3600)/60);return text;}
+        std::snprintf(text,sizeof(text),"сброс %s%lld д %lld ч",approx,seconds/86400,(seconds%86400)/3600);return text;
+    }
     if(seconds<60) return std::string("reset ")+approx+"<1m";
     if(seconds<3600){std::snprintf(text,sizeof(text),"reset %s%lldm",approx,seconds/60);return text;}
     if(seconds<86400){std::snprintf(text,sizeof(text),"reset %s%lldh %lldm",approx,seconds/3600,(seconds%3600)/60);return text;}
@@ -324,9 +342,15 @@ static std::string PaceText(const Limit& limit,bool compact=false) {
     std::chrono::system_clock::time_point exhaustion,reset;
     if(!ParseIsoUtc(limit.exhaustion,exhaustion))return "";
     const auto now=std::chrono::system_clock::now();
-    if(ParseIsoUtc(limit.reset,reset)&&exhaustion>=reset-std::chrono::minutes(5))return compact?"enough to reset":"Pace: enough to reset";
+    if(ParseIsoUtc(limit.reset,reset)&&exhaustion>=reset-std::chrono::minutes(5))return compact?(g_language_ru?"хватит до сброса":"enough to reset"):(g_language_ru?"Темпа хватит до сброса":"Pace: enough to reset");
     auto seconds=std::max<long long>(0,std::chrono::duration_cast<std::chrono::seconds>(exhaustion-now).count());
     char text[64]={};
+    if(g_language_ru){
+        if(seconds<60)return compact?"осталось <1 мин":"Хватит меньше чем на минуту";
+        if(seconds<3600){std::snprintf(text,sizeof(text),compact?"хватит ~%lld мин":"Хватит примерно на %lld мин",seconds/60);return text;}
+        if(seconds<86400){std::snprintf(text,sizeof(text),compact?"хватит ~%lld ч %lld мин":"Хватит примерно на %lld ч %lld мин",seconds/3600,(seconds%3600)/60);return text;}
+        std::snprintf(text,sizeof(text),compact?"хватит ~%lld д %lld ч":"Хватит примерно на %lld д %lld ч",seconds/86400,(seconds%86400)/3600);return text;
+    }
     if(seconds<60)return compact?"<1m left":"Pace: <1 min left";
     if(seconds<3600){std::snprintf(text,sizeof(text),compact?"~%lldm left":"Pace: ~%lld min left",seconds/60);return text;}
     if(seconds<86400){std::snprintf(text,sizeof(text),compact?"~%lldh %lldm left":"Pace: ~%lld hr %lld min left",seconds/3600,(seconds%3600)/60);return text;}
@@ -334,7 +358,12 @@ static std::string PaceText(const Limit& limit,bool compact=false) {
 }
 static std::string BankedResetText(const Provider& provider) {
     if(provider.banked_resets<0)return "";
-    std::string text=std::to_string(provider.banked_resets)+(provider.banked_resets==1?" banked reset":" banked resets");
+    std::string text;
+    if(g_language_ru){
+        int tail=provider.banked_resets%100,last=provider.banked_resets%10;
+        const char* word=(tail>=11&&tail<=14)?" сохранённых сбросов":last==1?" сохранённый сброс":(last>=2&&last<=4)?" сохранённых сброса":" сохранённых сбросов";
+        text=std::to_string(provider.banked_resets)+word;
+    }else text=std::to_string(provider.banked_resets)+(provider.banked_resets==1?" banked reset":" banked resets");
     if(provider.banked_resets>0){
         const Limit* weekly=nullptr;for(const auto& limit:provider.limits)if(HasPrefix(limit.id,"seven_day")){weekly=&limit;break;}
         std::chrono::system_clock::time_point exhaustion;
@@ -344,7 +373,10 @@ static std::string BankedResetText(const Provider& provider) {
             const auto current=std::max<long long>(0,std::chrono::duration_cast<std::chrono::seconds>(exhaustion-now).count());
             const auto total=(long long)std::round(current+provider.banked_resets*current*100.0/remaining);
             char coverage[42]={};
-            if(total<86400)std::snprintf(coverage,sizeof(coverage)," · coverage ~%lldh",total/3600);
+            if(g_language_ru){
+                if(total<86400)std::snprintf(coverage,sizeof(coverage)," · общий запас ~%lld ч",total/3600);
+                else std::snprintf(coverage,sizeof(coverage)," · общий запас ~%lld д %lld ч",total/86400,(total%86400)/3600);
+            }else if(total<86400)std::snprintf(coverage,sizeof(coverage)," · coverage ~%lldh",total/3600);
             else std::snprintf(coverage,sizeof(coverage)," · coverage ~%lldd %lldh",total/86400,(total%86400)/3600);
             text+=coverage;
         }
@@ -353,7 +385,10 @@ static std::string BankedResetText(const Provider& provider) {
     if(provider.banked_resets>0&&ParseIsoUtc(provider.banked_expiry,expiry)){
         auto seconds=std::max<long long>(0,std::chrono::duration_cast<std::chrono::seconds>(expiry-std::chrono::system_clock::now()).count());
         char suffix[40]={};
-        if(seconds<86400)std::snprintf(suffix,sizeof(suffix)," · expires in %lldh",seconds/3600);
+        if(g_language_ru){
+            if(seconds<86400)std::snprintf(suffix,sizeof(suffix)," · истекает через %lld ч",seconds/3600);
+            else std::snprintf(suffix,sizeof(suffix)," · истекает через %lld д",seconds/86400);
+        }else if(seconds<86400)std::snprintf(suffix,sizeof(suffix)," · expires in %lldh",seconds/3600);
         else std::snprintf(suffix,sizeof(suffix)," · expires in %lldd",seconds/86400);
         text+=suffix;
     }
@@ -383,14 +418,14 @@ static void SubmitInsetGlass(float x,float y,float w,float h,float scale) {
 static void ProviderRows(ImDrawList* d,const Provider& p,float x,float& y,float width,float scale,ImU32 accent) {
     float text=scale*g_text_scale,fs=15*text, font_small=12*text; d->AddCircleFilled(ImVec2(x+6*scale,y+10*scale),5*scale,accent);
     AddText(d,g_semibold,fs,ImVec2(x+16*scale,y),C(246,249,253),p.name); y+=23*scale;
-    if (p.limits.empty()) { AddText(d,g_regular,font_small,ImVec2(x,y),C(196,211,226),"Connecting..."); y+=40*scale; return; }
+    if (p.limits.empty()) { AddText(d,g_regular,font_small,ImVec2(x,y),C(196,211,226),g_language_ru?"Подключение...":"Connecting..."); y+=40*scale; return; }
     for (auto& l:p.limits) {
-        float top=y; double left=l.used<0?-1:100-l.used; std::string lefts=left<0?"-":std::to_string((int)std::round(left))+"% left";
+        float top=y; double left=l.used<0?-1:100-l.used; std::string lefts=left<0?"-":std::to_string((int)std::round(left))+(g_language_ru?"% осталось":"% left");
         AddText(d,g_semibold,14*text,ImVec2(x,top),C(250,252,255),Ellipsize(LimitName(l),width-110*scale,g_semibold,14*text));
         float vw=g_semibold->CalcTextSizeA(14*text,FLT_MAX,0,lefts.c_str()).x; AddText(d,g_semibold,14*text,ImVec2(x+width-vw,top),left<0?C(190,205,220):LeftColor(left),lefts);
         std::string detail=ResetText(l),pace=PaceText(l);if(!pace.empty())detail+="  ·  "+pace;
         AddText(d,g_regular,font_small,ImVec2(x,top+21*scale),C(198,213,228),Ellipsize(detail,width,g_regular,font_small));
-        std::string used=l.used<0?"-":std::to_string((int)std::round(l.used))+"% used"; float uw=g_regular->CalcTextSizeA(font_small,FLT_MAX,0,used.c_str()).x;
+        std::string used=l.used<0?"-":std::to_string((int)std::round(l.used))+(g_language_ru?"% использовано":"% used"); float uw=g_regular->CalcTextSizeA(font_small,FLT_MAX,0,used.c_str()).x;
         AddText(d,g_regular,font_small,ImVec2(x+width-uw,top+21*scale),C(198,213,228),used);
         Progress(d,ImVec2(x,top+43*scale),ImVec2(x+width,top+50*scale),l.used); y+=62*scale;
     }
@@ -400,14 +435,14 @@ static void ProviderCard(ImDrawList* d,const Provider& p,float x,float y,float w
     d->AddCircleFilled(ImVec2(x+27*scale,y+31*scale),6*scale,accent);
     AddText(d,g_semibold,18*text,ImVec2(x+43*scale,y+18*scale),C(252,253,255),p.name);
     const Limit* primary=Primary(p);
-    std::string remaining=primary&&primary->used>=0?std::to_string((int)std::round(100-primary->used))+"% LEFT":"CONNECTING";
+    std::string remaining=primary&&primary->used>=0?std::to_string((int)std::round(100-primary->used))+(g_language_ru?"% ОСТАЛОСЬ":"% LEFT"):(g_language_ru?"ПОДКЛЮЧЕНИЕ":"CONNECTING");
     float rw=g_semibold->CalcTextSizeA(12*text,FLT_MAX,0,remaining.c_str()).x;
     float remainingX=x+width-20*scale-rw;
     AddReadableText(d,g_semibold,12*text,ImVec2(remainingX,y+21*scale),primary?LeftColor(100-primary->used):C(225,231,239),remaining,scale);
     const std::string banked=BankedResetText(p);
     const float rowStart=banked.empty()?57.f:70.f;
     if(!banked.empty())AddText(d,g_regular,10.5f*text,ImVec2(x+43*scale,y+42*scale),p.banked_resets>0?C(139,232,193):C(185,198,214),Ellipsize(banked,width-65*scale,g_regular,10.5f*text));
-    if(p.limits.empty()) { AddText(d,g_regular,14*text,ImVec2(x+22*scale,y+78*scale),C(214,224,235),"Waiting for usage data..."); return; }
+    if(p.limits.empty()) { AddText(d,g_regular,14*text,ImVec2(x+22*scale,y+78*scale),C(214,224,235),g_language_ru?"Ожидание данных...":"Waiting for usage data..."); return; }
     int index=0;
     for(const auto& l:p.limits) {
         if(index>=3) break;
@@ -428,10 +463,10 @@ static void DrawDesktop(const State& state,int w,int h,float scale) {
     const float pad=22*scale,cardW=w-2*pad;
     const bool showClaude=state.claude.enabled,showCodex=state.codex.enabled;
     auto* d=ImGui::GetBackgroundDrawList(); float text=scale*g_text_scale;
-    AddText(d,g_semibold,11*text,ImVec2(28*scale,22*scale),C(206,213,232),"PLAN USAGE");
-    std::string heading=showClaude&&showCodex?"Claude + ChatGPT":showClaude?"Claude usage":showCodex?"ChatGPT usage":"LimitBar";
+    AddText(d,g_semibold,11*text,ImVec2(28*scale,22*scale),C(206,213,232),g_language_ru?"ИСПОЛЬЗОВАНИЕ":"PLAN USAGE");
+    std::string heading=showClaude&&showCodex?"Claude + ChatGPT":showClaude?(g_language_ru?"Лимиты Claude":"Claude usage"):showCodex?(g_language_ru?"Лимиты ChatGPT":"ChatGPT usage"):"LimitBar";
     AddText(d,g_semibold,30*text,ImVec2(28*scale,43*scale),C(255,255,255),heading);
-    AddText(d,g_regular,13*text,ImVec2(28*scale,84*scale),C(205,215,230),showClaude||showCodex?"Live limits and reset times":"Enable a provider from the tray menu");
+    AddText(d,g_regular,13*text,ImVec2(28*scale,84*scale),C(205,215,230),showClaude||showCodex?(g_language_ru?"Лимиты и время сброса":"Live limits and reset times"):(g_language_ru?"Включите источник через значок в tray":"Enable a provider from the tray menu"));
     if(showClaude&&showCodex){
         const float claudeCardH=220.f*scale;
         const bool hasReserve=state.codex.limits.size()>2;
@@ -448,15 +483,15 @@ static void DrawDesktop(const State& state,int w,int h,float scale) {
         SubmitInsetGlass(pad,cardY,cardW,cardH,scale);
         ProviderCard(d,provider,pad,cardY,cardW,scale,showClaude?C(255,185,104):C(120,181,255));
     }
-    AddText(d,g_regular,12*text,ImVec2(28*scale,h-43*scale),C(194,207,223),"Updates automatically");
+    AddText(d,g_regular,12*text,ImVec2(28*scale,h-43*scale),C(194,207,223),g_language_ru?"Обновляется автоматически":"Updates automatically");
     AddText(d,g_semibold,11*text,ImVec2(w-116*scale,h-43*scale),C(215,225,240),"LIMITBAR");
 }
 static const char* TaskWindowLabel(const Limit* l) {
     if(!l)return "";
-    if(HasPrefix(l->id,"five_hour"))return "5h";
-    if(HasPrefix(l->id,"seven_day"))return "7d";
-    if(l->id=="gpt_reserve")return "reserve";
-    return "limit";
+    if(HasPrefix(l->id,"five_hour"))return g_language_ru?"5ч":"5h";
+    if(HasPrefix(l->id,"seven_day"))return g_language_ru?"7д":"7d";
+    if(l->id=="gpt_reserve")return g_language_ru?"резерв":"reserve";
+    return g_language_ru?"лимит":"limit";
 }
 static void TaskProviderContent(ImDrawList* d,const Provider& p,const Limit* l,float x,float y,float width,float scale,ImU32 accent,bool compact) {
     double used=l?l->used:-1, left=used<0?-1:100-used; float text=scale*g_text_scale;
@@ -475,7 +510,7 @@ static void TaskProviderContent(ImDrawList* d,const Provider& p,const Limit* l,f
     AddText(d,g_semibold,nameSize,ImVec2(x+15*scale,y-1*scale),C(250,252,255),Ellipsize(p.name,width-78*scale,g_semibold,nameSize));
     std::string v=left<0?"--":std::to_string((int)std::round(left))+"%"; float vw=g_semibold->CalcTextSizeA(valueSize,FLT_MAX,0,v.c_str()).x;
     AddReadableText(d,g_semibold,valueSize,ImVec2(x+width-vw,y-2*scale),left<0?C(210,220,232):LeftColor(left),v,scale);
-    std::string detail="connecting";
+    std::string detail=g_language_ru?"подключение":"connecting";
     if(l){std::string pace=PaceText(*l,true);detail=std::string(TaskWindowLabel(l))+"  ·  "+(pace.empty()?TaskReset(*l):pace);}
     AddText(d,g_regular,detailSize,ImVec2(x+15*scale,y+19*scale),C(184,198,214),Ellipsize(detail,width-15*scale,g_regular,detailSize));
     Progress(d,ImVec2(x,y+34*scale),ImVec2(x+width,y+37*scale),used);
