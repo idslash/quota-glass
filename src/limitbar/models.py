@@ -36,6 +36,8 @@ class UsageSnapshot:
     source: str = ""
     health: Health = Health.OK
     message: str | None = None
+    banked_resets_available: int | None = None
+    banked_resets_expire_at: datetime | None = None
 
     def window(self, window_id: str) -> LimitWindow | None:
         return next((item for item in self.windows if item.id == window_id), None)
@@ -53,6 +55,8 @@ class UsageSnapshot:
             "provider_name": self.provider_name,
             "fetched_at": self.fetched_at.isoformat(),
             "source": self.source,
+            "banked_resets_available": self.banked_resets_available,
+            "banked_resets_expire_at": self.banked_resets_expire_at.isoformat() if self.banked_resets_expire_at else None,
             "windows": [
                 {
                     "id": item.id,
@@ -75,6 +79,8 @@ class UsageSnapshot:
             source=str(value.get("source", "cache")),
             health=Health.STALE,
             message="Showing the last successful reading",
+            banked_resets_available=_integer(value.get("banked_resets_available")),
+            banked_resets_expire_at=_parse_time(value.get("banked_resets_expire_at")),
             windows=tuple(
                 LimitWindow(
                     id=str(item["id"]),

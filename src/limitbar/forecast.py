@@ -44,7 +44,7 @@ class UsageForecaster:
             horizon_hours = 6 if window.duration_minutes and window.duration_minutes <= 300 else 72
             cutoff = stamp - timedelta(hours=horizon_hours)
             self.history[key] = samples = [sample for sample in samples if sample.at >= cutoff][-96:]
-            exhaustion = _project_exhaustion(samples, stamp, float(window.used_percent))
+            exhaustion = _project_exhaustion(samples, stamp, window)
             windows.append(replace(window, projected_exhaustion_at=exhaustion))
         self._save()
         return replace(snapshot, windows=tuple(windows))
@@ -107,27 +107,39 @@ def _started_new_window(previous: Sample, used: float, reset: datetime | None) -
     return False
 
 
-def _project_exhaustion(samples: list[Sample], now: datetime, used: float) -> datetime | None:
+def _project_exhaustion(samples: list[Sample], now: datetime, window: LimitWindow) -> datetime | None:
+    used = float(window.used_percent or 0)
     if used >= 100:
         return now
-    if len(samples) < 2:
-        return None
     rates: list[float] = []
-    latest = samples[-1]
-    for sample in samples[:-1]:
-        elapsed = (latest.at - sample.at).total_seconds()
-        delta = latest.used - sample.used
-        if elapsed >= 300 and 0.25 <= delta <= 50:
-            rates.append(delta * 3600 / elapsed)
-    if not rates:
+    if len(samples) >= 2:
+        latest = samples[-1]
+        minimum_span = 3600 if window.duration_minutes and window.duration_minutes >= 10_080 else 300
+        for sample in samples[:-1]:
+            elapsed = (latest.at - sample.at).total_seconds()
+            delta = latest.used - sample.used
+            if elapsed >= minimum_span and 0.25 <= delta <= 50:
+                rates.append(delta * 3600 / elapsed)
+    rate = float(median(rates)) if rates else _window_average_rate(window, now)
+    if rate is None:
         return None
-    rate = float(median(rates))
     if rate < 0.05:
         return None
     hours = max(0.0, 100.0 - used) / rate
     if hours > 24 * 60:
         return None
     return now + timedelta(hours=hours)
+
+
+def _window_average_rate(window: LimitWindow, now: datetime) -> float | None:
+    if window.used_percent is None or window.used_percent < 1 or not window.resets_at or not window.duration_minutes:
+        return None
+    reset = window.resets_at.astimezone(timezone.utc)
+    started = reset - timedelta(minutes=window.duration_minutes)
+    elapsed_hours = (now - started).total_seconds() / 3600
+    if elapsed_hours < 0.25 or elapsed_hours >= window.duration_minutes / 60:
+        return None
+    return float(window.used_percent) / elapsed_hours
 
 
 def _parse_time(value: object) -> datetime | None:

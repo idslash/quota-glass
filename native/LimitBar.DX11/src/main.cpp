@@ -9,6 +9,7 @@
 #include <dwmapi.h>
 #include <windows.h>
 #include <windowsx.h>
+#include <shellapi.h>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -32,6 +33,7 @@ static UINT g_resize_w = 0, g_resize_h = 0;
 static Glass::Backdrop g_backdrop;
 static Glass::Renderer g_glass;
 static bool g_taskbar = false;
+static bool g_popup = false;
 static bool g_taskbar_compact = false;
 static bool g_language_ru = false;
 static bool g_claude_enabled = true;
@@ -74,7 +76,7 @@ static std::chrono::steady_clock::time_point g_provider_transition[2] = {g_start
 static std::chrono::steady_clock::time_point g_provider_manual_until[2] = {std::chrono::steady_clock::time_point::min(),std::chrono::steady_clock::time_point::min()};
 
 struct Limit { std::string id; double used = -1; std::string reset; std::string exhaustion; };
-struct Provider { std::string name; std::vector<Limit> limits; bool enabled=true; };
+struct Provider { std::string name; std::vector<Limit> limits; bool enabled=true; int banked_resets=-1; std::string banked_expiry; };
 struct State { Provider claude{"Claude"}; Provider codex{"ChatGPT"}; };
 enum class TaskPage { FiveHour=0, Weekly=1, Reserve=2 };
 enum class TaskMode { Smart=0, Carousel=1, Fixed=2 };
@@ -97,6 +99,7 @@ static void CreateTarget();
 static void CleanupTarget();
 static void CleanupDevice();
 static void PositionTaskbar();
+static void PositionPopup();
 static void KeepTaskbarVisible();
 static void KeepDesktopVisible();
 static void ApplyWindowShape(HWND hwnd, bool taskbar);
@@ -164,6 +167,13 @@ static Provider ParseProvider(const std::string& json, const char* key, const ch
     std::regex item(R"re("id":"([^"]+)","label":"[^"]*","used_percent":(null|-?[0-9.]+),"resets_at":(null|"([^"]*)"),"duration_minutes":(?:null|[0-9]+)(?:,"projected_exhaustion_at":(null|"([^"]*)"))?)re");
     for (std::sregex_iterator it(s.begin(),s.end(),item), end; it!=end; ++it) {
         Limit v; v.id=(*it)[1].str(); if ((*it)[2].str()!="null") v.used=std::stod((*it)[2].str()); v.reset=(*it)[4].str(); v.exhaustion=(*it)[6].str(); out.limits.push_back(v);
+    }
+    const std::string marker=std::string("\"")+key+"\":{";
+    size_t begin=json.find(marker),windows=begin==std::string::npos?std::string::npos:json.find("\"windows\":[",begin);
+    if(begin!=std::string::npos&&windows!=std::string::npos){
+        std::string metadata=json.substr(begin,windows-begin);std::smatch match;
+        if(std::regex_search(metadata,match,std::regex(R"("banked_resets_available":(null|[0-9]+))"))&&match[1].str()!="null")out.banked_resets=std::stoi(match[1].str());
+        if(std::regex_search(metadata,match,std::regex(R"re("banked_resets_expire_at":(null|"([^"]*)"))re"))&&match[1].str()!="null")out.banked_expiry=match[2].str();
     }
     return out;
 }
@@ -322,6 +332,33 @@ static std::string PaceText(const Limit& limit,bool compact=false) {
     if(seconds<86400){std::snprintf(text,sizeof(text),compact?"~%lldh %lldm left":"Pace: ~%lld hr %lld min left",seconds/3600,(seconds%3600)/60);return text;}
     std::snprintf(text,sizeof(text),compact?"~%lldd %lldh left":"Pace: ~%lld d %lld hr left",seconds/86400,(seconds%86400)/3600);return text;
 }
+static std::string BankedResetText(const Provider& provider) {
+    if(provider.banked_resets<0)return "";
+    std::string text=std::to_string(provider.banked_resets)+(provider.banked_resets==1?" banked reset":" banked resets");
+    if(provider.banked_resets>0){
+        const Limit* weekly=nullptr;for(const auto& limit:provider.limits)if(HasPrefix(limit.id,"seven_day")){weekly=&limit;break;}
+        std::chrono::system_clock::time_point exhaustion;
+        if(weekly&&weekly->used>=0&&weekly->used<99.5&&ParseIsoUtc(weekly->exhaustion,exhaustion)){
+            const auto now=std::chrono::system_clock::now();
+            const double remaining=100.0-weekly->used;
+            const auto current=std::max<long long>(0,std::chrono::duration_cast<std::chrono::seconds>(exhaustion-now).count());
+            const auto total=(long long)std::round(current+provider.banked_resets*current*100.0/remaining);
+            char coverage[42]={};
+            if(total<86400)std::snprintf(coverage,sizeof(coverage)," · coverage ~%lldh",total/3600);
+            else std::snprintf(coverage,sizeof(coverage)," · coverage ~%lldd %lldh",total/86400,(total%86400)/3600);
+            text+=coverage;
+        }
+    }
+    std::chrono::system_clock::time_point expiry;
+    if(provider.banked_resets>0&&ParseIsoUtc(provider.banked_expiry,expiry)){
+        auto seconds=std::max<long long>(0,std::chrono::duration_cast<std::chrono::seconds>(expiry-std::chrono::system_clock::now()).count());
+        char suffix[40]={};
+        if(seconds<86400)std::snprintf(suffix,sizeof(suffix)," · expires in %lldh",seconds/3600);
+        else std::snprintf(suffix,sizeof(suffix)," · expires in %lldd",seconds/86400);
+        text+=suffix;
+    }
+    return text;
+}
 static std::string Ellipsize(std::string s, float maxw, ImFont* f, float size) {
     if (f->CalcTextSizeA(size,FLT_MAX,0,s.c_str()).x<=maxw) return s;
     while (s.size()>4 && f->CalcTextSizeA(size,FLT_MAX,0,(s+"...").c_str()).x>maxw) s.pop_back(); return s+"...";
@@ -367,11 +404,14 @@ static void ProviderCard(ImDrawList* d,const Provider& p,float x,float y,float w
     float rw=g_semibold->CalcTextSizeA(12*text,FLT_MAX,0,remaining.c_str()).x;
     float remainingX=x+width-20*scale-rw;
     AddReadableText(d,g_semibold,12*text,ImVec2(remainingX,y+21*scale),primary?LeftColor(100-primary->used):C(225,231,239),remaining,scale);
+    const std::string banked=BankedResetText(p);
+    const float rowStart=banked.empty()?57.f:70.f;
+    if(!banked.empty())AddText(d,g_regular,10.5f*text,ImVec2(x+43*scale,y+42*scale),p.banked_resets>0?C(139,232,193):C(185,198,214),Ellipsize(banked,width-65*scale,g_regular,10.5f*text));
     if(p.limits.empty()) { AddText(d,g_regular,14*text,ImVec2(x+22*scale,y+78*scale),C(214,224,235),"Waiting for usage data..."); return; }
     int index=0;
     for(const auto& l:p.limits) {
         if(index>=3) break;
-        float top=y+(57+index*72)*scale;
+        float top=y+(rowStart+index*72)*scale;
         std::string pct=l.used<0?"-":std::to_string((int)std::round(l.used))+"%";
         AddText(d,g_semibold,14*text,ImVec2(x+22*scale,top),C(250,252,255),Ellipsize(LimitName(l),width-120*scale,g_semibold,14*text));
         float pw=g_semibold->CalcTextSizeA(18*text,FLT_MAX,0,pct.c_str()).x;
@@ -423,7 +463,7 @@ static void TaskProviderContent(ImDrawList* d,const Provider& p,const Limit* l,f
     if(compact) {
         const float nameSize=11.5f*text,valueSize=12.5f*text;
         d->AddCircleFilled(ImVec2(x+3.5f*scale,y+5.5f*scale),3.2f*scale,accent);
-        std::string name=p.name+" "+TaskWindowLabel(l);
+        std::string name=p.name+" "+TaskWindowLabel(l);if(l){std::string pace=PaceText(*l,true);if(!pace.empty())name+=" · "+pace;}
         AddText(d,g_semibold,nameSize,ImVec2(x+12*scale,y-3*scale),C(248,251,255),Ellipsize(name,width-55*scale,g_semibold,nameSize));
         std::string v=left<0?"--":std::to_string((int)std::round(left))+"%"; float vw=g_semibold->CalcTextSizeA(valueSize,FLT_MAX,0,v.c_str()).x;
         AddReadableText(d,g_semibold,valueSize,ImVec2(x+width-vw,y-3*scale),left<0?C(210,220,232):LeftColor(left),v,scale);
@@ -547,24 +587,25 @@ static void DrawTaskbar(const State& state,int w,int h,float scale) {
 
 int main(int argc,char** argv) {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-    for(int i=1;i<argc;++i){std::string arg=argv[i];if(arg=="--taskbar")g_taskbar=true;else if(arg=="--compact")g_taskbar_compact=true;else if(arg=="--allow-capture")g_allow_capture=true;else if(arg=="--language=ru")g_language_ru=true;else if(arg=="--no-claude")g_claude_enabled=false;else if(arg=="--no-codex")g_codex_enabled=false;else if(arg.rfind("--scale=",0)==0)g_interface_scale=std::clamp(std::stof(arg.substr(8)),1.f,1.5f);else if(arg.rfind("--text-scale=",0)==0)g_text_scale=std::clamp(std::stof(arg.substr(13)),1.f,1.3f);}
+    for(int i=1;i<argc;++i){std::string arg=argv[i];if(arg=="--taskbar")g_taskbar=true;else if(arg=="--popup")g_popup=true;else if(arg=="--compact")g_taskbar_compact=true;else if(arg=="--allow-capture")g_allow_capture=true;else if(arg=="--language=ru")g_language_ru=true;else if(arg=="--no-claude")g_claude_enabled=false;else if(arg=="--no-codex")g_codex_enabled=false;else if(arg.rfind("--scale=",0)==0)g_interface_scale=std::clamp(std::stof(arg.substr(8)),1.f,1.5f);else if(arg.rfind("--text-scale=",0)==0)g_text_scale=std::clamp(std::stof(arg.substr(13)),1.f,1.3f);}
     if(g_taskbar)LoadTaskbarPrefs();
-    const wchar_t* cls=g_taskbar?L"LimitBarGlassTaskbar":L"LimitBarGlassDesktop";
-    HANDLE mutex=CreateMutexW(nullptr,TRUE,g_taskbar?L"Local\\LimitBarGlassTaskbar":L"Local\\LimitBarGlassDesktop");
+    const wchar_t* cls=g_taskbar?L"LimitBarGlassTaskbar":g_popup?L"LimitBarGlassPopup":L"LimitBarGlassDesktop";
+    const wchar_t* mutexName=g_taskbar?L"Local\\LimitBarGlassTaskbar":g_popup?L"Local\\LimitBarGlassPopup":L"Local\\LimitBarGlassDesktop";
+    HANDLE mutex=CreateMutexW(nullptr,TRUE,mutexName);
     if (GetLastError()==ERROR_ALREADY_EXISTS) {
         if (HWND existing=FindWindowW(cls,nullptr)) {
             ShowWindow(existing,SW_SHOW);
-            SetWindowPos(existing,g_taskbar?HWND_TOPMOST:HWND_TOP,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_SHOWWINDOW|SWP_NOACTIVATE);
+            SetWindowPos(existing,(g_taskbar||g_popup)?HWND_TOPMOST:HWND_TOP,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_SHOWWINDOW|(g_popup?0:SWP_NOACTIVATE));
         }
         if(mutex)CloseHandle(mutex); return 0;
     }
     ImGui_ImplWin32_EnableDpiAwareness();
     WNDCLASSEXW wc={sizeof(wc),CS_CLASSDC,WndProc,0,0,GetModuleHandle(nullptr),nullptr,nullptr,nullptr,nullptr,cls,nullptr}; RegisterClassExW(&wc);
     int width=g_taskbar?(g_taskbar_compact?kTaskbarCompactWidth:kTaskbarWidth):(int)std::round(520*g_interface_scale),height=g_taskbar?(g_taskbar_compact?kTaskbarCompactHeight:kTaskbarHeight):(int)std::round(660*g_interface_scale),x=0,y=0;
-    if (!g_taskbar) { RECT wa{}; SystemParametersInfoW(SPI_GETWORKAREA,0,&wa,0); x=wa.right-width-24; y=wa.top+24; }
-    DWORD ex=WS_EX_LAYERED|WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE|(g_taskbar?WS_EX_TOPMOST:0);
+    if (!g_taskbar) { RECT wa{}; SystemParametersInfoW(SPI_GETWORKAREA,0,&wa,0); x=wa.right-width-24; y=g_popup?wa.bottom-height-12:wa.top+24; }
+    DWORD ex=WS_EX_LAYERED|WS_EX_TOOLWINDOW|((g_taskbar||g_popup)?WS_EX_TOPMOST:0)|(g_popup?0:WS_EX_NOACTIVATE);
     g_hwnd=CreateWindowExW(ex,cls,L"LimitBar Glass",WS_POPUP,x,y,width,height,nullptr,nullptr,wc.hInstance,nullptr);
-    if(!g_taskbar) AttachDesktopWindow(g_hwnd);
+    if(!g_taskbar&&!g_popup) AttachDesktopWindow(g_hwnd);
     ApplyWindowShape(g_hwnd,g_taskbar);
     SetLayeredWindowAttributes(g_hwnd,RGB(0,0,0),255,LWA_ALPHA); MARGINS margins={-1}; DwmExtendFrameIntoClientArea(g_hwnd,&margins);
     // Keep the overlay hidden until the backdrop owns a clean desktop frame.
@@ -582,8 +623,8 @@ int main(int argc,char** argv) {
     // island has no refracted desktop texture, so screenshot mode can expose it
     // immediately without the hide/capture/show cycle used by the large card.
     if(g_taskbar && qaCapture) SetWindowDisplayAffinity(g_hwnd,0);
-    ShowWindow(g_hwnd,SW_SHOWNA); UpdateWindow(g_hwnd); if(g_taskbar) PositionTaskbar();
-    if (!g_taskbar) KeepDesktopVisible();
+    ShowWindow(g_hwnd,g_popup?SW_SHOW:SW_SHOWNA); UpdateWindow(g_hwnd); if(g_taskbar) PositionTaskbar();else if(g_popup){PositionPopup();SetForegroundWindow(g_hwnd);}
+    if (!g_taskbar&&!g_popup) KeepDesktopVisible();
     // Bright, refractive liquid glass: a clear centre for legibility with a
     // narrow, luminous blue/violet lens around the perimeter.
     Glass::SetAppearance(0); Glass::SetAccent(.38f,.68f,1.f);
@@ -615,9 +656,12 @@ int main(int argc,char** argv) {
     HWND captureForeground=GetForegroundWindow();
     auto captureRefreshUntil=std::chrono::steady_clock::time_point::min();
     while(!done){ MSG msg; while(PeekMessage(&msg,nullptr,0,0,PM_REMOVE)){TranslateMessage(&msg);DispatchMessage(&msg);if(msg.message==WM_QUIT)done=true;} if(done)break;
+        if(g_popup&&std::chrono::steady_clock::now()-g_started_at>std::chrono::milliseconds(350)&&(GetAsyncKeyState(VK_LBUTTON)&1)){
+            POINT pointer{};RECT popup{};GetCursorPos(&pointer);GetWindowRect(g_hwnd,&popup);if(!PtInRect(&popup,pointer)){PostMessageW(g_hwnd,WM_CLOSE,0,0);continue;}
+        }
         if(g_resize_w&&g_resize_h){CleanupTarget();g_swap->ResizeBuffers(0,g_resize_w,g_resize_h,DXGI_FORMAT_UNKNOWN,0);g_resize_w=g_resize_h=0;CreateTarget();}
         if(g_taskbar){if(frame%60==0)PositionTaskbar();else KeepTaskbarVisible();}
-        else if(frame%12==0)KeepDesktopVisible();
+        else if(!g_popup&&frame%12==0)KeepDesktopVisible();
         // During a drag the existing full-screen texture is re-sliced at the
         // new window origin. Capturing concurrently makes the backdrop appear
         // to jump a frame behind the window. Refresh once the pointer releases.
@@ -698,10 +742,21 @@ static void PositionTaskbar(){
     SetWindowPos(g_hwnd,HWND_TOPMOST,std::max((int)r.left+8,x),y,width,height,SWP_NOACTIVATE|SWP_SHOWWINDOW);
     if(resized)ApplyWindowShape(g_hwnd,true);
 }
+static void PositionPopup(){
+    HWND tb=FindWindowW(L"Shell_TrayWnd",nullptr);RECT task{},tray{};if(!tb||!GetWindowRect(tb,&task))return;
+    tray=task;HWND notify=FindWindowExW(tb,nullptr,L"TrayNotifyWnd",nullptr);if(notify)GetWindowRect(notify,&tray);
+    RECT window{};GetWindowRect(g_hwnd,&window);int width=window.right-window.left,height=window.bottom-window.top;
+    int right=tray.left-16;int x=std::max((int)task.left+8,right-width);int y=std::max(8,(int)task.top-height-10);
+    SetWindowPos(g_hwnd,HWND_TOPMOST,x,y,width,height,SWP_SHOWWINDOW);
+}
 static void KeepTaskbarVisible(){SetWindowPos(g_hwnd,HWND_TOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE|SWP_NOOWNERZORDER|SWP_SHOWWINDOW);}
 static void OpenDesktopWidget() {
-    HWND desktop=FindWindowW(L"LimitBarGlassDesktop",nullptr);
-    if(desktop){ShowWindow(desktop,SW_SHOWNA);SetWindowPos(desktop,HWND_BOTTOM,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_SHOWWINDOW|SWP_NOACTIVATE);}
+    if(HWND popup=FindWindowW(L"LimitBarGlassPopup",nullptr)){PostMessageW(popup,WM_CLOSE,0,0);return;}
+    wchar_t executable[MAX_PATH]={};GetModuleFileNameW(nullptr,executable,MAX_PATH);
+    wchar_t arguments[320]={};
+    swprintf_s(arguments,L"--popup --scale=%.2f --text-scale=%.2f%s%s%s%s",g_interface_scale,g_text_scale,
+        g_language_ru?L" --language=ru":L"",g_claude_enabled?L"":L" --no-claude",g_codex_enabled?L"":L" --no-codex",g_allow_capture?L" --allow-capture":L"");
+    ShellExecuteW(nullptr,L"open",executable,arguments,nullptr,SW_SHOW);
 }
 static void ShowTaskbarMenu(POINT screen) {
     enum { ModeSmart=1001,ModeCarousel,ModeFixed,ScopeTogether=1051,ScopeSeparate,ShowFive=1101,ShowWeekly,ShowReserve,PinCurrent=1201,OpenDetails };
@@ -817,7 +872,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp){
     // Desktop dragging is handled before ImGui so its input backend cannot
     // consume the click. SetWindowPos does not enter Windows' modal move loop,
     // which keeps the DXGI backdrop rendering while the card moves.
-    if(msg==WM_LBUTTONDOWN&&!g_taskbar&&GET_Y_LPARAM(lp)<112){g_dragging=true;GetCursorPos(&g_drag_cursor);GetWindowRect(hwnd,&g_drag_window);SetCapture(hwnd);return 0;}
+    if(msg==WM_LBUTTONDOWN&&!g_taskbar&&!g_popup&&GET_Y_LPARAM(lp)<112){g_dragging=true;GetCursorPos(&g_drag_cursor);GetWindowRect(hwnd,&g_drag_window);SetCapture(hwnd);return 0;}
     if(msg==WM_MOUSEMOVE&&g_dragging){POINT p{};GetCursorPos(&p);POINT target{g_drag_window.left+p.x-g_drag_cursor.x,g_drag_window.top+p.y-g_drag_cursor.y};HWND parent=GetParent(hwnd);if(parent)MapWindowPoints(HWND_DESKTOP,parent,&target,1);SetWindowPos(hwnd,nullptr,target.x,target.y,0,0,SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE);return 0;}
     if(msg==WM_LBUTTONUP&&g_dragging){g_dragging=false;g_force_backdrop_capture=true;ReleaseCapture();return 0;}
     if(msg==WM_LBUTTONDOWN&&g_taskbar){g_taskbar_swiping=true;g_taskbar_swipe_start={GET_X_LPARAM(lp),GET_Y_LPARAM(lp)};g_taskbar_swipe_provider=g_task_prefs.scope==TaskScope::PerProvider?ProviderAtClientPoint(hwnd,g_taskbar_swipe_start):-1;g_taskbar_swipe_x=0;SetCapture(hwnd);return 0;}
@@ -836,8 +891,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp){
     if(msg==WM_CAPTURECHANGED){if(g_dragging)g_force_backdrop_capture=true;g_dragging=false;g_taskbar_swiping=false;g_taskbar_swipe_provider=-1;g_taskbar_swipe_x=0;return 0;}
     if(ImGui_ImplWin32_WndProcHandler(hwnd,msg,wp,lp))return true;
     switch(msg){
+        case WM_ACTIVATE:if(g_popup&&LOWORD(wp)==WA_INACTIVE){PostMessageW(hwnd,WM_CLOSE,0,0);return 0;}break;
+        case WM_CLOSE:DestroyWindow(hwnd);return 0;
         case WM_SIZE:if(wp!=SIZE_MINIMIZED){g_resize_w=LOWORD(lp);g_resize_h=HIWORD(lp);}return 0;
-        case WM_KEYDOWN:if(wp==VK_ESCAPE){ShowWindow(hwnd,SW_HIDE);return 0;}break;
+        case WM_KEYDOWN:if(wp==VK_ESCAPE){if(g_popup)DestroyWindow(hwnd);else ShowWindow(hwnd,SW_HIDE);return 0;}break;
         case WM_DESTROY:PostQuitMessage(0);return 0;
     }
     return DefWindowProcW(hwnd,msg,wp,lp);

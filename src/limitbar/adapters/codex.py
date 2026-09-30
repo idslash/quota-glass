@@ -120,11 +120,30 @@ def parse_codex_usage(response: dict) -> UsageSnapshot:
             break
     if not windows:
         raise ProviderError("Codex did not report a current usage window", retryable=False)
+    reset_credits = result.get("rateLimitResetCredits") or result.get("rate_limit_reset_credits")
+    banked_count: int | None = None
+    banked_expiry = None
+    if isinstance(reset_credits, dict):
+        raw_count = reset_credits.get("availableCount") if "availableCount" in reset_credits else reset_credits.get("available_count")
+        banked_count = _integer(raw_count)
+        credits = reset_credits.get("credits")
+        if isinstance(credits, list):
+            expiries = [
+                expiry
+                for credit in credits
+                if isinstance(credit, dict)
+                and str(credit.get("status", "")).lower() in {"available", "active", "unused"}
+                and (expiry := _time(credit.get("expiresAt") or credit.get("expires_at"))) is not None
+            ]
+            if expiries:
+                banked_expiry = min(expiries)
     return UsageSnapshot(
         provider_id="codex",
         provider_name="ChatGPT",
         windows=tuple(windows),
         source="Codex local app-server adapter",
+        banked_resets_available=banked_count,
+        banked_resets_expire_at=banked_expiry,
     )
 
 

@@ -52,6 +52,10 @@ def test_codex_parser_selects_duration_instead_of_position():
     response = {
         "id": 2,
         "result": {
+            "rateLimitResetCredits": {
+                "availableCount": 1,
+                "credits": [{"status": "available", "expiresAt": 1790900000}],
+            },
             "rateLimitsByLimitId": {
                 "codex": {
                     "primary": {"usedPercent": 42, "windowDurationMins": 10080, "resetsAt": 1790726400},
@@ -69,6 +73,8 @@ def test_codex_parser_selects_duration_instead_of_position():
     assert snapshot.window("five_hour").remaining_percent == 85
     assert snapshot.window("five_hour").resets_at.tzinfo == timezone.utc
     assert snapshot.window("gpt_reserve").remaining_percent == 54
+    assert snapshot.banked_resets_available == 1
+    assert snapshot.banked_resets_expire_at == datetime.fromtimestamp(1790900000, timezone.utc)
 
 
 def test_codex_parser_accepts_legacy_bucket_and_snake_case():
